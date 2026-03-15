@@ -1,0 +1,18 @@
+# Compiled binaries
+*.exe
+*.enc
+*.bin
+
+# Go SDK (downloaded by install.sh)
+go/
+
+# Build cache
+build/
+
+# Tool binaries (downloaded by install.sh)
+tools/
+
+# OS/editor junk
+.DS_Store
+*.swp
+*~
