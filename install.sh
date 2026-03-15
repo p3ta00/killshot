@@ -590,12 +590,24 @@ exit(0 if (int(v[0]),int(v[1])) >= (int(m[0]),int(m[1])) else 1)
 }
 
 resolve_latest_go() {
-    # Get latest stable Go version from golang.org
+    # Get latest stable Go version, but cap at what garble supports.
+    # Garble v0.15.0 supports up to Go 1.25.x — Go 1.26+ breaks it.
     local latest=$(curl -sL "https://go.dev/VERSION?m=text" 2>/dev/null | head -1)
-    if [ -n "$latest" ]; then
-        echo "${latest#go}"
+    latest="${latest#go}"
+    if [ -z "$latest" ]; then
+        echo "1.25.3"
+        return
+    fi
+
+    local major_minor=$(echo "$latest" | cut -d. -f1-2)
+    # If latest Go is too new for garble, use latest 1.25.x instead
+    if python3 -c "exit(0 if tuple(map(int,'$major_minor'.split('.'))) > (1,25) else 1)" 2>/dev/null; then
+        # Fetch latest 1.25.x patch version
+        local go125=$(curl -sL "https://go.dev/dl/?mode=json" 2>/dev/null | \
+            python3 -c "import json,sys; vs=[r['version'] for r in json.load(sys.stdin) if r['version'].startswith('go1.25')]; print(vs[0].lstrip('go') if vs else '1.25.3')" 2>/dev/null)
+        echo "${go125:-1.25.3}"
     else
-        echo "1.24.4"  # fallback
+        echo "$latest"
     fi
 }
 
@@ -775,25 +787,30 @@ else
     info "Not found (optional - for compiling .NET from source)"
 fi
 
-echo "  wixl (MSI builder for AppLocker bypass):"
+echo "  MSI builder (wixl or msibuild, for AppLocker bypass):"
 WIXL_BIN="$(which wixl 2>/dev/null)"
+MSIBUILD_BIN="$(which msibuild 2>/dev/null)"
 if [ -n "$WIXL_BIN" ]; then
     ok "wixl ($(wixl --version 2>&1 | head -1))"
+elif [ -n "$MSIBUILD_BIN" ]; then
+    ok "msibuild ($MSIBUILD_BIN)"
 else
     info "Not found — installing msitools from Debian..."
-    WIXL_TMP=$(mktemp -d)
+    MSI_TMP=$(mktemp -d)
     (
-        cd "$WIXL_TMP"
+        cd "$MSI_TMP"
         curl -sL -O "http://ftp.debian.org/debian/pool/main/g/gcab/libgcab-1.0-0_1.6-1+b3_amd64.deb" \
             -O "http://ftp.debian.org/debian/pool/main/m/msitools/libmsi-1.0-0_0.106+repack-1_amd64.deb" \
             -O "http://ftp.debian.org/debian/pool/main/m/msitools/msitools_0.106+repack-1_amd64.deb" 2>/dev/null
         dpkg -i libgcab-1.0-0_*.deb libmsi-1.0-0_*.deb msitools_*.deb 2>/dev/null
     )
-    rm -rf "$WIXL_TMP"
+    rm -rf "$MSI_TMP"
     if command -v wixl &>/dev/null; then
         ok "wixl installed"
+    elif command -v msibuild &>/dev/null; then
+        ok "msibuild installed (MSI generation via IDT tables)"
     else
-        warn "wixl install failed (MSI generation unavailable)"
+        warn "msitools install failed (MSI will fall back to DLL-only output)"
     fi
 fi
 

