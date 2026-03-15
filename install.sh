@@ -775,6 +775,28 @@ else
     info "Not found (optional - for compiling .NET from source)"
 fi
 
+echo "  wixl (MSI builder for AppLocker bypass):"
+WIXL_BIN="$(which wixl 2>/dev/null)"
+if [ -n "$WIXL_BIN" ]; then
+    ok "wixl ($(wixl --version 2>&1 | head -1))"
+else
+    info "Not found — installing msitools from Debian..."
+    WIXL_TMP=$(mktemp -d)
+    (
+        cd "$WIXL_TMP"
+        curl -sL -O "http://ftp.debian.org/debian/pool/main/g/gcab/libgcab-1.0-0_1.6-1+b3_amd64.deb" \
+            -O "http://ftp.debian.org/debian/pool/main/m/msitools/libmsi-1.0-0_0.106+repack-1_amd64.deb" \
+            -O "http://ftp.debian.org/debian/pool/main/m/msitools/msitools_0.106+repack-1_amd64.deb" 2>/dev/null
+        dpkg -i libgcab-1.0-0_*.deb libmsi-1.0-0_*.deb msitools_*.deb 2>/dev/null
+    )
+    rm -rf "$WIXL_TMP"
+    if command -v wixl &>/dev/null; then
+        ok "wixl installed"
+    else
+        warn "wixl install failed (MSI generation unavailable)"
+    fi
+fi
+
 # ─── Step 6: Verify & create symlinks ───────────────────────
 
 echo ""

