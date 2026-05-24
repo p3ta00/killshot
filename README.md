@@ -319,6 +319,7 @@ Validated: Windows 11 24H2, Defender real-time ON, LSASS RunAsPPL=2.
 | ExclusionProcess | Disables AMSI for scripts run under the runner. Does NOT protect the file. |
 | Dropper detection | XOR-decode + WriteAllBytes in one WinRM call triggers behavioral detection. Always split into two calls. |
 | GodPotato output | Spawns async. Tool output doesn't flow back through Process.StandardOutput. Use scheduled task or write to file. |
+| AMSI bypass v1 dead on Win11 24H2 | `amsiContext` null technique: field is 0 at baseline — Win11 24H2 uses kernel-mode AMSI, managed field is no longer the dispatch gate. Use `--bypass 2` (AmsiScanBuffer patch) or `--bypass 3` (ExclusionProcess). |
 
 ---
 

