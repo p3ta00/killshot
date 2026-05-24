@@ -191,7 +191,8 @@ def generate(tool_name, params, output_path, script_dir):
         tmp_path = tmp.name
 
     donut_code = f"""
-import donut
+import donut, os, tempfile
+os.chdir(tempfile.gettempdir())
 sc = donut.create(file={json.dumps(tool_path)}, arch=2, params={json.dumps(params)}, exit_opt=2)
 if sc:
     with open({json.dumps(tmp_path)}, 'wb') as f:
