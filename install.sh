@@ -296,7 +296,7 @@ if [ "$CHECK_ONLY" = "1" ]; then
 
     echo ""
     echo "  Potato exploits:"
-    for f in GodPotato.exe PrintSpoofer.exe BadPotato.exe EfsPotato.exe; do
+    for f in GodPotato.exe PrintSpoofer.exe JuicyPotatoNG.exe SweetPotato.exe BadPotato.exe EfsPotato.exe; do
         found=0
         for d in "$POTATOES_DIR" "/opt/my-resources/tools/potatoes"; do
             [ -f "$d/$f" ] && { ok "$f ($d)"; found=1; break; }
@@ -421,6 +421,24 @@ else
     fi
     [ -n "$EFSPOTATO_FOUND" ] && SUCCESS=$((SUCCESS+1)) || warn "EfsPotato not available"
 fi
+TOTAL=$((TOTAL+1))
+
+# JuicyPotatoNG — works without BITS service, Win10/11 + Server 2019/2022
+info "Resolving latest JuicyPotatoNG..."
+JP_TAG=$(get_latest_release "antonioCoco/JuicyPotatoNG")
+if [ -n "$JP_TAG" ]; then
+    download_zip \
+        "https://github.com/antonioCoco/JuicyPotatoNG/releases/download/${JP_TAG}/JuicyPotatoNG.zip" \
+        "$POTATOES_DIR/JuicyPotatoNG.exe" "JuicyPotatoNG.exe" "JuicyPotatoNG $JP_TAG" && SUCCESS=$((SUCCESS+1))
+else
+    warn "Could not resolve JuicyPotatoNG latest release"
+fi
+TOTAL=$((TOTAL+1))
+
+# SweetPotato — multi-technique (EfsPotato + PrintSpoofer combination)
+download \
+    "https://github.com/Flangvik/SharpCollection/raw/master/NetFramework_4.7_Any/SweetPotato.exe" \
+    "$POTATOES_DIR/SweetPotato.exe" "SweetPotato" && SUCCESS=$((SUCCESS+1))
 TOTAL=$((TOTAL+1))
 
 echo ""
