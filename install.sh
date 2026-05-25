@@ -306,7 +306,7 @@ if [ "$CHECK_ONLY" = "1" ]; then
     echo ""
     echo "  Windows tools:"
     for f in Rubeus.exe SharpHound.exe Certify.exe Seatbelt.exe SharpDPAPI.exe SharpUp.exe \
-             SharpChrome.exe winPEAS.exe Whisker.exe KrbRelayUp.exe ligolo-agent.exe chisel.exe mimikatz.exe; do
+             SharpChrome.exe winPEAS.exe Whisker.exe KrbRelayUp.exe ligolo-agent.exe chisel.exe mimikatz.exe lazagne.exe; do
         found=0
         for d in "$WINDOWS_DIR" "/opt/my-resources/tools/windows" "/opt/resources/windows/chisel"; do
             if [ -f "$d/$f" ] || [ -f "$d/chisel64.exe" -a "$f" = "chisel.exe" ]; then
@@ -524,6 +524,20 @@ else
 fi
 TOTAL=$((TOTAL+1))
 
+# lazagne - latest release (single exe)
+info "Resolving latest LaZagne..."
+LZ_TAG=$(get_latest_release "AlessandroZ/LaZagne")
+if [ -n "$LZ_TAG" ]; then
+    download \
+        "https://github.com/AlessandroZ/LaZagne/releases/download/${LZ_TAG}/lazagne.exe" \
+        "$WINDOWS_DIR/lazagne.exe" "lazagne $LZ_TAG" && SUCCESS=$((SUCCESS+1))
+else
+    download \
+        "https://github.com/AlessandroZ/LaZagne/releases/latest/download/lazagne.exe" \
+        "$WINDOWS_DIR/lazagne.exe" "lazagne (latest)" && SUCCESS=$((SUCCESS+1))
+fi
+TOTAL=$((TOTAL+1))
+
 # Invoke-Mimikatz.ps1 - try Empire local copy first, then PowerSploit
 MIMI_PS1=""
 for src in "/opt/tools/Empire/empire/server/data/module_source/credentials/Invoke-Mimikatz.ps1" \
@@ -738,15 +752,19 @@ done
 
 if [ "$DONUT_OK" = "0" ] || [ "$UPDATE" = "1" ]; then
     info "Installing/updating donut-shellcode..."
-    # Try pip in various locations
+    # Try pip in various locations; --break-system-packages needed on Arch/CachyOS/Debian 12+
     for pip_cmd in "pip3" "pip" "$PYTHON3 -m pip"; do
         if $pip_cmd install --upgrade donut-shellcode 2>/dev/null; then
             ok "donut-shellcode installed/updated"
             DONUT_OK=1
             break
+        elif $pip_cmd install --upgrade --break-system-packages donut-shellcode 2>/dev/null; then
+            ok "donut-shellcode installed/updated (--break-system-packages)"
+            DONUT_OK=1
+            break
         fi
     done
-    [ "$DONUT_OK" = "0" ] && warn "donut-shellcode install failed (install manually: pip install donut-shellcode)"
+    [ "$DONUT_OK" = "0" ] && warn "donut-shellcode install failed (install manually: pip install donut-shellcode --break-system-packages)"
 fi
 
 # ─── Step 5: NASM (optional, for raw shellcode work) ────────

