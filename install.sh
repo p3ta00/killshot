@@ -167,7 +167,7 @@ while [[ $# -gt 0 ]]; do
             echo "    ./install.sh --check        Verify all tools & compilers are present"
             echo ""
             echo "  WHAT IT INSTALLS"
-            echo "    Tools:      18 offensive Windows binaries (potatoes, SharpCollection, etc.)"
+            echo "    Tools:      25+ offensive Windows binaries (potatoes, SharpCollection, quick wins, etc.)"
             echo "    Go:         Cross-compiler for runner.exe (>= 1.24, latest stable)"
             echo "    Donut:      PE-to-shellcode converter (pip package)"
             echo "    Garble:     Go binary obfuscator (optional)"
@@ -175,10 +175,11 @@ while [[ $# -gt 0 ]]; do
             echo "    UPX:        Binary packer (optional)"
             echo ""
             echo "  TOOL SOURCES"
-            echo "    SharpCollection (nightly CI builds): Rubeus, Certify, Seatbelt, SharpDPAPI,"
-            echo "      SharpUp, SharpChrome, Whisker, KrbRelayUp, BadPotato"
-            echo "    GitHub Releases: GodPotato, PrintSpoofer, SharpHound, winPEAS,"
-            echo "      ligolo-ng, chisel, mimikatz"
+            echo "    SharpCollection: Rubeus, Certify, Seatbelt, SharpDPAPI, SharpUp,"
+            echo "      SharpChrome, Whisker, KrbRelayUp, SharpGPOAbuse, ADSearch"
+            echo "    GitHub Releases: GodPotato, PrintSpoofer, RunasCs, Snaffler, SQLRecon,"
+            echo "      SharpHound, winPEAS, ligolo-ng, mimikatz, lazagne"
+            echo "    Delivery: gen_hta.py (mshta), gen_xsl.py (wmic), gen_lnk.py (shortcut/ISO)"
             echo ""
             exit 0;;
         *) shift;;
@@ -306,7 +307,9 @@ if [ "$CHECK_ONLY" = "1" ]; then
     echo ""
     echo "  Windows tools:"
     for f in Rubeus.exe SharpHound.exe Certify.exe Seatbelt.exe SharpDPAPI.exe SharpUp.exe \
-             SharpChrome.exe winPEAS.exe Whisker.exe KrbRelayUp.exe ligolo-agent.exe chisel.exe mimikatz.exe lazagne.exe; do
+             SharpChrome.exe winPEAS.exe Whisker.exe KrbRelayUp.exe SharpGPOAbuse.exe ADSearch.exe \
+             RunasCs.exe Snaffler.exe SQLRecon.exe \
+             ligolo-agent.exe mimikatz.exe lazagne.exe; do
         found=0
         for d in "$WINDOWS_DIR" "/opt/my-resources/tools/windows" "/opt/resources/windows/chisel"; do
             if [ -f "$d/$f" ] || [ -f "$d/chisel64.exe" -a "$f" = "chisel.exe" ]; then
@@ -423,12 +426,58 @@ TOTAL=$((TOTAL+1))
 echo ""
 echo "  .NET Offensive Tools (SharpCollection):"
 
-for tool in Rubeus Certify Seatbelt SharpDPAPI SharpUp SharpChrome Whisker KrbRelayUp; do
+for tool in Rubeus Certify Seatbelt SharpDPAPI SharpUp SharpChrome Whisker KrbRelayUp \
+            SharpGPOAbuse ADSearch; do
     download \
         "https://github.com/Flangvik/SharpCollection/raw/master/NetFramework_4.7_Any/${tool}.exe" \
         "$WINDOWS_DIR/${tool}.exe" "$tool" && SUCCESS=$((SUCCESS+1))
     TOTAL=$((TOTAL+1))
 done
+
+echo ""
+echo "  Quick Win Tools (GitHub Releases):"
+
+# RunasCs — runas with credentials, no interactive session needed
+info "Resolving latest RunasCs..."
+RC_TAG=$(get_latest_release "antonioCoco/RunasCs")
+if [ -n "$RC_TAG" ]; then
+    download_zip \
+        "https://github.com/antonioCoco/RunasCs/releases/download/${RC_TAG}/RunasCs.zip" \
+        "$WINDOWS_DIR/RunasCs.exe" "RunasCs.exe" "RunasCs $RC_TAG" && SUCCESS=$((SUCCESS+1))
+else
+    download \
+        "https://github.com/antonioCoco/RunasCs/releases/latest/download/RunasCs.exe" \
+        "$WINDOWS_DIR/RunasCs.exe" "RunasCs (latest)" && SUCCESS=$((SUCCESS+1))
+fi
+TOTAL=$((TOTAL+1))
+
+# Snaffler — credential/secret file hunting in SMB shares
+info "Resolving latest Snaffler..."
+SN_TAG=$(get_latest_release "SnaffCon/Snaffler")
+if [ -n "$SN_TAG" ]; then
+    download \
+        "https://github.com/SnaffCon/Snaffler/releases/download/${SN_TAG}/Snaffler.exe" \
+        "$WINDOWS_DIR/Snaffler.exe" "Snaffler $SN_TAG" && SUCCESS=$((SUCCESS+1))
+else
+    download \
+        "https://github.com/SnaffCon/Snaffler/releases/latest/download/Snaffler.exe" \
+        "$WINDOWS_DIR/Snaffler.exe" "Snaffler (latest)" && SUCCESS=$((SUCCESS+1))
+fi
+TOTAL=$((TOTAL+1))
+
+# SQLRecon — MSSQL enumeration
+info "Resolving latest SQLRecon..."
+SR_TAG=$(get_latest_release "skahwah/SQLRecon")
+if [ -n "$SR_TAG" ]; then
+    download \
+        "https://github.com/skahwah/SQLRecon/releases/download/${SR_TAG}/SQLRecon.exe" \
+        "$WINDOWS_DIR/SQLRecon.exe" "SQLRecon $SR_TAG" && SUCCESS=$((SUCCESS+1))
+else
+    download \
+        "https://github.com/skahwah/SQLRecon/releases/latest/download/SQLRecon.exe" \
+        "$WINDOWS_DIR/SQLRecon.exe" "SQLRecon (latest)" && SUCCESS=$((SUCCESS+1))
+fi
+TOTAL=$((TOTAL+1))
 
 echo ""
 echo "  Tools with GitHub Releases:"

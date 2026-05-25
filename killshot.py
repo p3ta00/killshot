@@ -140,6 +140,31 @@ TOOLS = {
         "default_params": "all",
         "desc": "Multi-browser/app credential extraction",
     },
+    "RunasCs": {
+        "paths": _win_paths("RunasCs.exe"),
+        "default_params": "",  # requires: user pass cmd [opts]
+        "desc": "Runas with creds — no interactive session needed",
+    },
+    "Snaffler": {
+        "paths": _win_paths("Snaffler.exe"),
+        "default_params": "-s -o snaffler.log",
+        "desc": "SMB share credential/secret file hunter",
+    },
+    "SQLRecon": {
+        "paths": _win_paths("SQLRecon.exe"),
+        "default_params": "/enum:sqlspns",
+        "desc": "MSSQL enumeration and command execution",
+    },
+    "SharpGPOAbuse": {
+        "paths": _win_paths("SharpGPOAbuse.exe"),
+        "default_params": "--AddComputerTask --TaskName Update --Author DOMAIN\\Admin --Command cmd.exe --Arguments '/c whoami'",
+        "desc": "GPO-based lateral movement / persistence",
+    },
+    "ADSearch": {
+        "paths": _win_paths("ADSearch.exe"),
+        "default_params": "--search \"(objectCategory=user)\" --attributes samaccountname,memberof",
+        "desc": "Targeted LDAP queries (faster than SharpHound for single lookups)",
+    },
 }
 
 

